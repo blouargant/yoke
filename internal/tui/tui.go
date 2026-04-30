@@ -18,14 +18,15 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/runner"
-	"google.golang.org/adk/session"
 	"google.golang.org/genai"
 
 	"github.com/blouargant/agent-toolkit/core/events"
@@ -58,6 +59,49 @@ func Run(ctx context.Context, cfg Config) error {
 
 	app := tview.NewApplication()
 
+	// Markdown renderer (lazy init: width depends on terminal). Falls
+	// back to raw text if glamour fails.
+	var (
+		mdMu     sync.Mutex
+		mdWidth  int
+		renderer *glamour.TermRenderer
+	)
+	getRenderer := func(w int) *glamour.TermRenderer {
+		mdMu.Lock()
+		defer mdMu.Unlock()
+		if w < 20 {
+			w = 80
+		}
+		if renderer != nil && mdWidth == w {
+			return renderer
+		}
+		r, err := glamour.NewTermRenderer(
+			glamour.WithAutoStyle(),
+			glamour.WithWordWrap(w),
+		)
+		if err != nil {
+			return nil
+		}
+		renderer = r
+		mdWidth = w
+		return renderer
+	}
+	renderMarkdown := func(md string, width int) string {
+		md = strings.TrimSpace(md)
+		if md == "" {
+			return ""
+		}
+		r := getRenderer(width)
+		if r == nil {
+			return md + "\n"
+		}
+		out, err := r.Render(md)
+		if err != nil {
+			return md + "\n"
+		}
+		return out
+	}
+
 	// ── Right pane: chat history + input ────────────────────────────────
 	chat := tview.NewTextView().
 		SetDynamicColors(true).
@@ -66,6 +110,9 @@ func Run(ctx context.Context, cfg Config) error {
 		SetWordWrap(true)
 	chat.SetBorder(true).SetTitle(" Chat ").SetTitleAlign(tview.AlignLeft)
 	chat.SetChangedFunc(func() { app.Draw() })
+	// ANSIWriter translates glamour's ANSI escape sequences into tview
+	// color tags so styled markdown actually renders inside the TextView.
+	chatANSI := tview.ANSIWriter(chat)
 
 	input := tview.NewInputField().
 		SetLabel(" > ").
@@ -143,6 +190,30 @@ func Run(ctx context.Context, cfg Config) error {
 		})
 	}
 
+	// chatWidth returns the current inner width of the chat pane, used
+	// to constrain markdown word-wrapping. Safe to call from any
+	// goroutine — GetInnerRect just reads cached dimensions.
+	chatWidth := func() int {
+		_, _, w, _ := chat.GetInnerRect()
+		return w
+	}
+
+	// flushMarkdown renders `buf` (markdown source) into the chat pane
+	// via glamour + ANSIWriter, then clears the buffer.
+	flushMarkdown := func(buf *strings.Builder) {
+		if buf.Len() == 0 {
+			return
+		}
+		text := buf.String()
+		buf.Reset()
+		w := chatWidth()
+		out := renderMarkdown(text, w)
+		app.QueueUpdateDraw(func() {
+			fmt.Fprint(chatANSI, out)
+			chat.ScrollToEnd()
+		})
+	}
+
 	// busy flag prevents overlapping submissions.
 	busy := false
 
@@ -160,22 +231,51 @@ func Run(ctx context.Context, cfg Config) error {
 				busy = false
 				app.QueueUpdateDraw(func() { app.SetFocus(input) })
 			}()
-			appendChat("\n[::b]you[-]\n%s\n", prompt)
-			appendChat("\n[::b]assistant[-]\n")
+
+			// Render the user turn as markdown too (so code blocks /
+			// lists in the question look right).
+			userMD := fmt.Sprintf("**you**\n\n%s", prompt)
+			appendChat("\n")
+			app.QueueUpdateDraw(func() {
+				fmt.Fprint(chatANSI, renderMarkdown(userMD, chatWidth()))
+			})
+			appendChat("[::b]assistant[-]\n")
+
 			seq := cfg.Runner.Run(ctx, cfg.UserID, cfg.SessionID,
 				&genai.Content{Role: "user", Parts: []*genai.Part{{Text: prompt}}},
 				adkagent.RunConfig{})
+
+			// Buffer assistant text per turn; flush as rendered markdown
+			// either when a non-text part arrives (tool call/response)
+			// or when the stream completes.
+			var mdBuf strings.Builder
 			for ev, err := range seq {
 				if err != nil {
+					flushMarkdown(&mdBuf)
 					appendChat("\n[red]error: %v[-]\n", err)
 					return
 				}
 				if ev == nil || ev.Content == nil {
 					continue
 				}
-				renderEvent(ev, appendChat)
+				for _, p := range ev.Content.Parts {
+					if p == nil {
+						continue
+					}
+					switch {
+					case p.Text != "":
+						mdBuf.WriteString(p.Text)
+					case p.FunctionCall != nil:
+						flushMarkdown(&mdBuf)
+						appendChat("[aqua]⚙ %s[-] %s\n",
+							p.FunctionCall.Name, shortArgs(p.FunctionCall.Args))
+					case p.FunctionResponse != nil:
+						flushMarkdown(&mdBuf)
+						appendChat("[gray]↳ %s[-]\n", p.FunctionResponse.Name)
+					}
+				}
 			}
-			appendChat("\n")
+			flushMarkdown(&mdBuf)
 		}()
 	}
 
@@ -209,25 +309,6 @@ func Run(ctx context.Context, cfg Config) error {
 	fmt.Fprintf(chat, "[gray]Welcome to %s. Type a message and press Enter.\nCtrl-L clears the chat. Ctrl-C / Esc to quit.[-]\n", cfg.AppName)
 
 	return app.SetRoot(root, true).EnableMouse(true).Run()
-}
-
-// renderEvent extracts text / tool-call / tool-response parts from a
-// session event and writes them to the chat pane via append.
-func renderEvent(ev *session.Event, append func(string, ...any)) {
-	for _, p := range ev.Content.Parts {
-		if p == nil {
-			continue
-		}
-		if p.Text != "" {
-			append("%s", p.Text)
-		}
-		if p.FunctionCall != nil {
-			append("\n[aqua]⚙ %s[-] %s\n", p.FunctionCall.Name, shortArgs(p.FunctionCall.Args))
-		}
-		if p.FunctionResponse != nil {
-			append("[gray]↳ %s[-]\n", p.FunctionResponse.Name)
-		}
-	}
 }
 
 // shortArgs renders tool args compactly for the inline chat display.
