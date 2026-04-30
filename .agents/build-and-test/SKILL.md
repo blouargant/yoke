@@ -52,7 +52,7 @@ Override the model with `GOAGENT_MODEL`. Full reference:
 
 ```bash
 PATH=$HOME/.local/go/bin:$PATH go run ./cmd/full console   # REPL
-PATH=$HOME/.local/go/bin:$PATH go run ./cmd/full web       # web UI
+PATH=$HOME/.local/go/bin:$PATH go run ./cmd/full web webui # web UI
 ```
 
 ## Run a single-component demo

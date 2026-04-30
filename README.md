@@ -41,7 +41,7 @@ export ANTHROPIC_API_KEY=sk-ant-…
 go run ./cmd/full console
 
 # Local web UI
-go run ./cmd/full web
+go run ./cmd/full web webui
 ```
 
 Out of the box the agent has:
@@ -107,8 +107,8 @@ See [docs/providers.md](docs/providers.md) for details.
 every component together and hands control to ADK's `full` launcher.
 
 ```bash
-go run ./cmd/full console   # REPL
-go run ./cmd/full web       # web UI
+go run ./cmd/full console     # REPL
+go run ./cmd/full web webui   # web UI
 ```
 
 There are also 23 single-component demos under `cmd/sNN_*/` that mirror

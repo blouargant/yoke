@@ -3,8 +3,8 @@
 //
 // Run modes:
 //
-//	go run ./cmd/full console   # interactive REPL
-//	go run ./cmd/full web       # local web UI
+//	go run ./cmd/full console      # interactive REPL
+//	go run ./cmd/full web webui    # local web UI
 package main
 
 import (

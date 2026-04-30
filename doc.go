@@ -1,4 +1,4 @@
-// Package goagentframework is a generic, vendor-neutral agent harness
+// Package agenttoolkit is a generic, vendor-neutral agent harness
 // inspired by Anthropic's Claude Code.
 //
 // # Design contract
@@ -39,4 +39,4 @@
 //
 // Model selection is controlled at runtime by GOAGENT_PROVIDER, which
 // accepts gemini, anthropic, openai, and openai_compat. See core/llm.
-package goagentframework
+package agenttoolkit
