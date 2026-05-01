@@ -208,8 +208,22 @@ You have no built-in domain expertise. Lean on the mounted skills and tools to d
 		plugins = append(plugins, cp)
 	}
 	if cmp, _, err := compress.Plugin("compress", compress.Config{
-		MemoryPath: ".agent_memory.md",
-		LLM:        llm,
+		MemoryPathFunc: func(userID, sessionID string) string {
+			// Per-session memory file so concurrent users / sessions
+			// never share a counter or overwrite each other's summaries.
+			// Falls back to a stable name when IDs are empty (e.g. early
+			// callbacks before a session is registered).
+			u := sanitizeID(userID)
+			s := sanitizeID(sessionID)
+			if u == "" {
+				u = "anon"
+			}
+			if s == "" {
+				s = "default"
+			}
+			return fmt.Sprintf(".agent_memory_%s_%s.md", u, s)
+		},
+		LLM: llm,
 	}); err == nil {
 		plugins = append(plugins, cmp)
 	}
@@ -243,4 +257,25 @@ You have no built-in domain expertise. Lean on the mounted skills and tools to d
 		args = []string{"console"}
 	}
 	return full.NewLauncher().Execute(ctx, cfg, args)
+}
+
+// sanitizeID strips characters that are unsafe in a filename so user/session
+// IDs can be embedded in per-session memory file paths without risk of path
+// traversal or filesystem errors. Anything outside [A-Za-z0-9_.-] is replaced
+// with '_'.
+func sanitizeID(s string) string {
+	b := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9',
+			c == '_', c == '-', c == '.':
+			b = append(b, c)
+		default:
+			b = append(b, '_')
+		}
+	}
+	return string(b)
 }

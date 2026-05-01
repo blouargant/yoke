@@ -31,18 +31,37 @@ type Config struct {
 	// Threshold in tokens. A summarisation pass runs once cumulative
 	// prompt+response token usage crosses it.
 	Threshold int64
-	// MemoryPath is the file the running summary is appended to.
+	// MemoryPath is the file the running summary is appended to when
+	// MemoryPathFunc is nil. Used as a single shared file across all
+	// sessions — only suitable for single-user demos.
 	MemoryPath string
+	// MemoryPathFunc, if set, is called per session to compute the file
+	// path the summary is appended to. It receives the userID and
+	// sessionID from the callback context and must return a writable file
+	// path. Use this to isolate per-session memory in multi-user setups.
+	MemoryPathFunc func(userID, sessionID string) string
 	// LLM used to generate the summary. If nil, compression runs in
 	// "stub" mode: it just notes the threshold was hit.
 	LLM model.LLM
 }
 
+// sessionState holds the per-session compression bookkeeping. Each session
+// has its own token counter, recent-text buffer, and busy flag so two users
+// hitting the harness concurrently never cross-contaminate each other's
+// summaries.
+type sessionState struct {
+	used       atomic.Int64
+	busy       atomic.Bool
+	mu         sync.Mutex
+	recentText string
+}
+
 // Plugin returns an ADK plugin that watches AfterModelCallback responses,
-// accumulates token usage, and triggers compression once it crosses
-// cfg.Threshold. The second return value is a Wait function that blocks until
-// any in-flight compression goroutine has finished — call it before the
-// process exits to ensure the memory file is fully written.
+// accumulates token usage per session, and triggers compression once a
+// session crosses cfg.Threshold. The second return value is a Wait function
+// that blocks until any in-flight compression goroutines have finished —
+// call it before the process exits to ensure memory files are fully
+// written.
 func Plugin(name string, cfg Config) (*plugin.Plugin, func(), error) {
 	if cfg.Threshold <= 0 {
 		cfg.Threshold = DefaultThreshold
@@ -50,26 +69,34 @@ func Plugin(name string, cfg Config) (*plugin.Plugin, func(), error) {
 	if cfg.MemoryPath == "" {
 		cfg.MemoryPath = DefaultMemoryPath
 	}
+	pathFor := cfg.MemoryPathFunc
+	if pathFor == nil {
+		pathFor = func(_, _ string) string { return cfg.MemoryPath }
+	}
+
 	var (
-		used       atomic.Int64
-		busy       atomic.Bool
-		wg         sync.WaitGroup
-		mu         sync.Mutex
-		recent     []string // last few responses we've buffered to summarise
-		recentText string
+		wg       sync.WaitGroup
+		sessions sync.Map // sessionKey -> *sessionState
 	)
 
-	flush := func(ctx context.Context) {
+	getState := func(key string) *sessionState {
+		if v, ok := sessions.Load(key); ok {
+			return v.(*sessionState)
+		}
+		v, _ := sessions.LoadOrStore(key, &sessionState{})
+		return v.(*sessionState)
+	}
+
+	flush := func(ctx context.Context, st *sessionState, path string) {
+		st.mu.Lock()
+		text := st.recentText
+		st.recentText = ""
+		st.mu.Unlock()
 		if cfg.LLM == nil {
-			_ = appendMemory(cfg.MemoryPath,
+			_ = appendMemory(path,
 				fmt.Sprintf("[compress] threshold %d reached; summary skipped (no LLM configured).", cfg.Threshold))
 			return
 		}
-		mu.Lock()
-		text := recentText
-		recent = nil
-		recentText = ""
-		mu.Unlock()
 		if text == "" {
 			return
 		}
@@ -83,7 +110,7 @@ func Plugin(name string, cfg Config) (*plugin.Plugin, func(), error) {
 		var summary string
 		for resp, err := range seq {
 			if err != nil {
-				_ = appendMemory(cfg.MemoryPath, fmt.Sprintf("[compress] error: %v", err))
+				_ = appendMemory(path, fmt.Sprintf("[compress] error: %v", err))
 				return
 			}
 			if resp == nil || resp.Content == nil {
@@ -93,34 +120,38 @@ func Plugin(name string, cfg Config) (*plugin.Plugin, func(), error) {
 				summary += p.Text
 			}
 		}
-		_ = appendMemory(cfg.MemoryPath, "## Compressed summary\n"+summary+"\n")
+		_ = appendMemory(path, "## Compressed summary\n"+summary+"\n")
 	}
 
 	cb := func(ctx agent.CallbackContext, resp *model.LLMResponse, _ error) (*model.LLMResponse, error) {
 		if resp == nil || resp.UsageMetadata == nil {
 			return nil, nil
 		}
+		userID, sessionID := ctx.UserID(), ctx.SessionID()
+		key := userID + "\x00" + sessionID
+		st := getState(key)
+
 		var n int64
 		n += int64(resp.UsageMetadata.PromptTokenCount)
 		n += int64(resp.UsageMetadata.CandidatesTokenCount)
-		used.Add(n)
+		st.used.Add(n)
 		if resp.Content != nil {
-			mu.Lock()
+			st.mu.Lock()
 			for _, p := range resp.Content.Parts {
 				if p != nil && p.Text != "" {
-					recent = append(recent, p.Text)
-					recentText += p.Text + "\n"
+					st.recentText += p.Text + "\n"
 				}
 			}
-			mu.Unlock()
+			st.mu.Unlock()
 		}
-		if used.Load() >= cfg.Threshold && busy.CompareAndSwap(false, true) {
+		if st.used.Load() >= cfg.Threshold && st.busy.CompareAndSwap(false, true) {
+			path := pathFor(userID, sessionID)
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				defer busy.Store(false)
-				defer used.Store(0)
-				flush(context.Background())
+				defer st.busy.Store(false)
+				defer st.used.Store(0)
+				flush(context.Background(), st, path)
 			}()
 		}
 		return nil, nil
