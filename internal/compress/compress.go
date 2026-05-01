@@ -40,8 +40,10 @@ type Config struct {
 
 // Plugin returns an ADK plugin that watches AfterModelCallback responses,
 // accumulates token usage, and triggers compression once it crosses
-// cfg.Threshold.
-func Plugin(name string, cfg Config) (*plugin.Plugin, error) {
+// cfg.Threshold. The second return value is a Wait function that blocks until
+// any in-flight compression goroutine has finished — call it before the
+// process exits to ensure the memory file is fully written.
+func Plugin(name string, cfg Config) (*plugin.Plugin, func(), error) {
 	if cfg.Threshold <= 0 {
 		cfg.Threshold = DefaultThreshold
 	}
@@ -51,6 +53,7 @@ func Plugin(name string, cfg Config) (*plugin.Plugin, error) {
 	var (
 		used       atomic.Int64
 		busy       atomic.Bool
+		wg         sync.WaitGroup
 		mu         sync.Mutex
 		recent     []string // last few responses we've buffered to summarise
 		recentText string
@@ -112,7 +115,9 @@ func Plugin(name string, cfg Config) (*plugin.Plugin, error) {
 			mu.Unlock()
 		}
 		if used.Load() >= cfg.Threshold && busy.CompareAndSwap(false, true) {
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				defer busy.Store(false)
 				defer used.Store(0)
 				flush(context.Background())
@@ -120,10 +125,11 @@ func Plugin(name string, cfg Config) (*plugin.Plugin, error) {
 		}
 		return nil, nil
 	}
-	return plugin.New(plugin.Config{
+	p, err := plugin.New(plugin.Config{
 		Name:               name,
 		AfterModelCallback: llmagent.AfterModelCallback(cb),
 	})
+	return p, wg.Wait, err
 }
 
 func appendMemory(path, text string) error {

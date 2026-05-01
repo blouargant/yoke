@@ -207,7 +207,7 @@ You have no built-in domain expertise. Lean on the mounted skills and tools to d
 	if _, cp, err := cache.Plugin("cache"); err == nil {
 		plugins = append(plugins, cp)
 	}
-	if cmp, err := compress.Plugin("compress", compress.Config{
+	if cmp, _, err := compress.Plugin("compress", compress.Config{
 		MemoryPath: ".agent_memory.md",
 		LLM:        llm,
 	}); err == nil {

@@ -18,8 +18,8 @@ func main() {
 	ctx := context.Background()
 	llm, err := agentkit.NewModel(ctx)
 	must(err)
-	plug, err := compress.Plugin("compress", compress.Config{
-		Threshold:  500, // tiny so the demo triggers at all
+	plug, wait, err := compress.Plugin("compress", compress.Config{
+		Threshold:  200, // tiny so the demo triggers at all
 		MemoryPath: ".agent_memory.md",
 		LLM:        llm,
 	})
@@ -32,11 +32,12 @@ func main() {
 	must(err)
 	r, err := agentkit.Runner("s06", a, plug)
 	must(err)
-	prompt := "Write a 200-word essay about agent harnesses, then list 5 key terms."
+	prompt := "Write a 500-word essay about agent harnesses, then list 5 key terms."
 	if len(os.Args) > 1 {
 		prompt = os.Args[1]
 	}
 	must(stream.Print(os.Stdout, agentkit.RunOnce(ctx, r, prompt)))
+	wait() // block until any in-flight compression goroutine finishes
 	fmt.Println("(see .agent_memory.md for the compressed summary)")
 }
 
