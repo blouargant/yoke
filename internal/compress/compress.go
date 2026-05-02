@@ -22,8 +22,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"google.golang.org/genai"
 
@@ -32,6 +34,8 @@ import (
 	"google.golang.org/adk/model"
 	"google.golang.org/adk/plugin"
 	"google.golang.org/adk/tool"
+
+	"github.com/blouargant/agent-toolkit/core/events"
 )
 
 // Defaults.
@@ -43,6 +47,8 @@ const (
 	DefaultKeepRecentTurns    = 4
 	DefaultToolResultMaxBytes = 4096
 	DefaultMemoryPath         = ".agent_memory.md"
+	DefaultStateLogEvery      = 5
+	DefaultStateLogPath       = ".agent_statelog.json"
 )
 
 // Config controls compression behaviour. v2 is a breaking change from v1:
@@ -76,6 +82,23 @@ type Config struct {
 	// AuditPath is the single audit log path used when AuditPathFunc is
 	// nil. Suitable for single-user demos only.
 	AuditPath string
+	// EventBus, when non-nil, receives compression_start / compression_end
+	// / compression_skipped events. Allows the TUI and file logger to
+	// observe compression activity in real time.
+	EventBus *events.Bus
+	// StateLogLLM is the model used to extract durable facts into a
+	// per-session State Log. If nil, the main LLM is used; if both are
+	// nil, State Log extraction is disabled.
+	StateLogLLM model.LLM
+	// StateLogEvery is the cadence (in AfterModel callbacks) at which
+	// the State Log is refreshed. Defaults to DefaultStateLogEvery.
+	StateLogEvery int
+	// StateLogPathFunc returns the per-session State Log file path. When
+	// nil, StateLogPath is used.
+	StateLogPathFunc func(userID, sessionID string) string
+	// StateLogPath is the single State Log path used when
+	// StateLogPathFunc is nil. Suitable for single-user demos only.
+	StateLogPath string
 }
 
 func (c *Config) applyDefaults() {
@@ -104,6 +127,16 @@ func (c *Config) applyDefaults() {
 		}
 		c.AuditPathFunc = func(_, _ string) string { return path }
 	}
+	if c.StateLogEvery <= 0 {
+		c.StateLogEvery = DefaultStateLogEvery
+	}
+	if c.StateLogPathFunc == nil {
+		path := c.StateLogPath
+		if path == "" {
+			path = DefaultStateLogPath
+		}
+		c.StateLogPathFunc = func(_, _ string) string { return path }
+	}
 }
 
 // sessionState is the per-(userID, sessionID) bookkeeping.
@@ -112,6 +145,8 @@ type sessionState struct {
 	lastTokenCount  atomic.Int64
 	forceCompact    atomic.Bool
 	recentUserTurns []string // last few user prompts; used by task-switch sniffer
+	sumCache        *summaryCache
+	stateLog        stateLogState
 }
 
 // Plugin returns the configured plugin plus a Wait function (kept for API
@@ -152,7 +187,7 @@ func (m *manager) state(userID, sessionID string) *sessionState {
 	if v, ok := m.sessions.Load(key); ok {
 		return v.(*sessionState)
 	}
-	v, _ := m.sessions.LoadOrStore(key, &sessionState{})
+	v, _ := m.sessions.LoadOrStore(key, &sessionState{sumCache: newSummaryCache()})
 	return v.(*sessionState)
 }
 
@@ -162,10 +197,16 @@ func (m *manager) hardLimit() int { return int(float64(m.cfg.WindowTokens) * m.c
 // beforeModel inspects req.Contents, decides whether to compress, and
 // rewrites the slice in place if so.
 func (m *manager) beforeModel(ctx agent.CallbackContext, req *model.LLMRequest) (*model.LLMResponse, error) {
+	return m.compressOnce(ctx, ctx.UserID(), ctx.SessionID(), req)
+}
+
+// compressOnce is the testable core of beforeModel: same behaviour but
+// keyed by explicit IDs so callers don't need a real CallbackContext.
+func (m *manager) compressOnce(ctx context.Context, userID, sessionID string, req *model.LLMRequest) (*model.LLMResponse, error) {
 	if req == nil {
 		return nil, nil
 	}
-	st := m.state(ctx.UserID(), ctx.SessionID())
+	st := m.state(userID, sessionID)
 
 	maybeMarkTaskSwitch(st, req.Contents)
 
@@ -184,32 +225,57 @@ func (m *manager) beforeModel(ctx agent.CallbackContext, req *model.LLMRequest) 
 	case before >= soft:
 		trigger = "soft"
 	default:
+		m.emit(events.EventCompressionSkipped, map[string]any{
+			"tokens": before, "soft": soft, "hard": hard,
+		})
 		return nil, nil
 	}
 
-	newContents, applied := m.runPipeline(ctx, req.Contents, trigger == "hard" || trigger == "forced")
+	m.emit(events.EventCompressionStart, map[string]any{
+		"trigger": trigger, "tokens_before": before,
+	})
+	start := time.Now()
+
+	newContents, applied := m.runPipeline(ctx, st, req.Contents, trigger == "hard" || trigger == "forced")
 	if applied == nil {
+		m.emit(events.EventCompressionEnd, map[string]any{
+			"trigger": trigger, "tokens_before": before, "tokens_after": before,
+			"passes": []string{}, "duration_ms": time.Since(start).Milliseconds(),
+		})
 		return nil, nil
 	}
 	req.Contents = newContents
 	after := CountContents(req.Contents)
-	m.audit(ctx, trigger, before, after, applied)
+	m.audit(userID, sessionID, trigger, before, after, applied)
+	m.emit(events.EventCompressionEnd, map[string]any{
+		"trigger": trigger, "tokens_before": before, "tokens_after": after,
+		"passes": applied, "duration_ms": time.Since(start).Milliseconds(),
+	})
 	return nil, nil
 }
 
-// afterModel records the most recent UsageMetadata count for diagnostics.
+// afterModel records the most recent UsageMetadata count and refreshes
+// the per-session State Log every StateLogEvery turns.
 func (m *manager) afterModel(ctx agent.CallbackContext, resp *model.LLMResponse, _ error) (*model.LLMResponse, error) {
-	if resp == nil || resp.UsageMetadata == nil {
-		return nil, nil
-	}
 	st := m.state(ctx.UserID(), ctx.SessionID())
-	st.lastTokenCount.Store(int64(resp.UsageMetadata.PromptTokenCount + resp.UsageMetadata.CandidatesTokenCount))
+	if resp != nil && resp.UsageMetadata != nil {
+		st.lastTokenCount.Store(int64(resp.UsageMetadata.PromptTokenCount + resp.UsageMetadata.CandidatesTokenCount))
+	}
+	m.maybeRefreshStateLog(ctx, ctx.UserID(), ctx.SessionID(), st)
 	return nil, nil
+}
+
+// emit pushes an event onto the configured bus (no-op when nil).
+func (m *manager) emit(name string, payload map[string]any) {
+	if m.cfg.EventBus == nil {
+		return
+	}
+	m.cfg.EventBus.Emit(name, payload)
 }
 
 // runPipeline applies passes in order. Returns (newContents, appliedPassNames)
 // or (nil, nil) when no pass altered the conversation.
-func (m *manager) runPipeline(ctx context.Context, contents []*genai.Content, includeSummariser bool) ([]*genai.Content, []string) {
+func (m *manager) runPipeline(ctx context.Context, st *sessionState, contents []*genai.Content, includeSummariser bool) ([]*genai.Content, []string) {
 	var applied []string
 	soft := m.softLimit()
 	cur := contents
@@ -238,7 +304,15 @@ func (m *manager) runPipeline(ctx context.Context, contents []*genai.Content, in
 	if CountContents(cur) <= soft || !includeSummariser {
 		return finalize(cur, applied)
 	}
-	step("summarize_middle", PassSummarizeMiddle(m.cfg.KeepHeadTurns, m.summariser(ctx)))
+
+	// Build a cache-aware summariser keyed on the exact middle slice
+	// the pass will see, and inject the State Log digest as prefix.
+	summarise := m.cachedSummariser(ctx, st, cur)
+	logPrefix := ""
+	st.stateLog.mu.Lock()
+	logPrefix = st.stateLog.log.renderForPrompt()
+	st.stateLog.mu.Unlock()
+	step("summarize_middle", PassSummarizeMiddle(m.cfg.KeepHeadTurns, summarise, logPrefix))
 	return finalize(cur, applied)
 }
 
@@ -247,6 +321,30 @@ func finalize(cur []*genai.Content, applied []string) ([]*genai.Content, []strin
 		return nil, nil
 	}
 	return cur, applied
+}
+
+// cachedSummariser wraps the configured LLM with a per-session LRU keyed
+// on the (head, recent, middle) tuple about to be summarised.
+func (m *manager) cachedSummariser(ctx context.Context, st *sessionState, cur []*genai.Content) func(string) (string, error) {
+	base := m.summariser(ctx)
+	if base == nil || st == nil || st.sumCache == nil {
+		return base
+	}
+	_, middle, _ := SplitMiddle(cur, m.cfg.KeepHeadTurns, m.cfg.KeepRecentTurns)
+	if middle == nil {
+		return base
+	}
+	key := summaryKey(middle, m.cfg.KeepHeadTurns, m.cfg.KeepRecentTurns)
+	return func(text string) (string, error) {
+		if cached, ok := st.sumCache.get(key); ok {
+			return cached, nil
+		}
+		out, err := base(text)
+		if err == nil && out != "" {
+			st.sumCache.put(key, out)
+		}
+		return out, err
+	}
 }
 
 // summariser returns a closure that asks the configured LLM to summarise
@@ -278,14 +376,75 @@ func (m *manager) summariser(ctx context.Context) func(string) (string, error) {
 	}
 }
 
+// maybeRefreshStateLog runs the State Log extractor when the per-session
+// turn counter exceeds StateLogEvery (or whenever a forced compaction was
+// requested). Best-effort: failures are silent and never block the loop.
+func (m *manager) maybeRefreshStateLog(ctx context.Context, userID, sessionID string, st *sessionState) {
+	llm := m.cfg.StateLogLLM
+	if llm == nil {
+		llm = m.cfg.LLM
+	}
+	if llm == nil {
+		return
+	}
+	st.stateLog.mu.Lock()
+	st.stateLog.turnsSince++
+	due := st.stateLog.turnsSince >= m.cfg.StateLogEvery || st.forceCompact.Load()
+	st.stateLog.mu.Unlock()
+	if !due {
+		return
+	}
+	transcript := m.stateLogDelta(st)
+	if transcript == "" {
+		st.stateLog.mu.Lock()
+		st.stateLog.turnsSince = 0
+		st.stateLog.mu.Unlock()
+		return
+	}
+	delta := extractStateLog(ctx, llm, transcript)
+	st.stateLog.mu.Lock()
+	defer st.stateLog.mu.Unlock()
+	if delta != nil {
+		st.stateLog.log.merge(delta)
+		_ = persistStateLog(m.cfg.StateLogPathFunc(userID, sessionID), &st.stateLog.log)
+	}
+	st.stateLog.turnsSince = 0
+}
+
+// stateLogDelta is a placeholder for "the conversation since last index".
+// We don't have access to the request here, so the AfterModel callback
+// receives only the response. We sidestep this by buffering recent user
+// turns in maybeMarkTaskSwitch and the lead's own output via the LLM
+// response. For now, render the most recent user prompt joined with the
+// model response — a minimal but useful delta.
+func (m *manager) stateLogDelta(st *sessionState) string {
+	st.mu.Lock()
+	recent := append([]string(nil), st.recentUserTurns...)
+	st.mu.Unlock()
+	if len(recent) == 0 {
+		return ""
+	}
+	// Use up to last 3 user turns to keep the call cheap.
+	if len(recent) > 3 {
+		recent = recent[len(recent)-3:]
+	}
+	var b strings.Builder
+	for _, t := range recent {
+		b.WriteString("user: ")
+		b.WriteString(t)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 const summariserPrompt = `Summarise the following agent transcript in fewer than 500 words.
 Preserve: file paths touched, tool names invoked, decisions made, open questions, and any errors encountered.
 Drop: small talk, intermediate reasoning, and verbose tool output.
 Write in past tense bullet points.`
 
 // audit appends a structured entry to the per-session memory file.
-func (m *manager) audit(ctx agent.CallbackContext, trigger string, before, after int, applied []string) {
-	path := m.cfg.AuditPathFunc(ctx.UserID(), ctx.SessionID())
+func (m *manager) audit(userID, sessionID, trigger string, before, after int, applied []string) {
+	path := m.cfg.AuditPathFunc(userID, sessionID)
 	if path == "" {
 		return
 	}

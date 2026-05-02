@@ -228,25 +228,41 @@ func PassDropUnusedSkills(contents []*genai.Content, keepRecent int) []*genai.Co
 	return out
 }
 
+// SplitMiddle returns the (head, middle, tail) slices used by
+// PassSummarizeMiddle. Exposed so callers (the manager) can compute a
+// cache key over the exact middle that the pass will process. Returns
+// (nil, nil, nil) when the head + tail already cover everything.
+func SplitMiddle(contents []*genai.Content, keepHead, keepRecent int) ([]*genai.Content, []*genai.Content, []*genai.Content) {
+	if keepHead < 0 {
+		keepHead = 0
+	}
+	if keepRecent < 0 {
+		keepRecent = 0
+	}
+	if keepHead+keepRecent >= len(contents) {
+		return nil, nil, nil
+	}
+	head := contents[:keepHead]
+	middle := contents[keepHead : len(contents)-keepRecent]
+	tail := contents[len(contents)-keepRecent:]
+	return head, middle, tail
+}
+
 // PassSummarizeMiddle is the heavyweight pass: it preserves the first
 // `keepHead` turns and the last `keepRecent` turns, and asks `summarise`
 // to produce a single-paragraph summary of everything in between. The
-// summary is inserted as one synthetic user turn.
+// summary is inserted as one synthetic user turn, optionally prefixed
+// with logPrefix (typically the rendered State Log JSON block).
 //
 // If summarise is nil, the middle is replaced by an extractive bullet
 // list of file paths and tool names found in the dropped turns.
-func PassSummarizeMiddle(keepHead int, summarise func(text string) (string, error)) Pass {
+func PassSummarizeMiddle(keepHead int, summarise func(text string) (string, error), logPrefix string) Pass {
 	if keepHead < 0 {
 		keepHead = 0
 	}
 	return func(contents []*genai.Content, keepRecent int) []*genai.Content {
-		if keepHead+keepRecent >= len(contents) {
-			return contents
-		}
-		head := contents[:keepHead]
-		middle := contents[keepHead : len(contents)-keepRecent]
-		tail := contents[len(contents)-keepRecent:]
-		if len(middle) == 0 {
+		head, middle, tail := SplitMiddle(contents, keepHead, keepRecent)
+		if middle == nil || len(middle) == 0 {
 			return contents
 		}
 		var summary string
@@ -259,9 +275,13 @@ func PassSummarizeMiddle(keepHead int, summarise func(text string) (string, erro
 		if summary == "" {
 			summary = extractiveSummary(middle)
 		}
+		body := "## Compressed history (auto-generated)\n" + summary
+		if strings.TrimSpace(logPrefix) != "" {
+			body = logPrefix + "\n\n" + body
+		}
 		synthetic := &genai.Content{
-			Role: "user",
-			Parts: []*genai.Part{{Text: "## Compressed history (auto-generated)\n" + summary}},
+			Role:  "user",
+			Parts: []*genai.Part{{Text: body}},
 		}
 		out := make([]*genai.Content, 0, len(head)+1+len(tail))
 		out = append(out, head...)

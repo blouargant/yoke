@@ -22,13 +22,16 @@ import (
 
 // Event names emitted by the bus.
 const (
-	EventSessionStart = "session_start"
-	EventSessionEnd   = "session_end"
-	EventBeforeModel  = "before_model"
-	EventAfterModel   = "after_model"
-	EventBeforeTool   = "before_tool"
-	EventAfterTool    = "after_tool"
-	EventToolError    = "tool_error"
+	EventSessionStart       = "session_start"
+	EventSessionEnd         = "session_end"
+	EventBeforeModel        = "before_model"
+	EventAfterModel         = "after_model"
+	EventBeforeTool         = "before_tool"
+	EventAfterTool          = "after_tool"
+	EventToolError          = "tool_error"
+	EventCompressionStart   = "compression_start"
+	EventCompressionEnd     = "compression_end"
+	EventCompressionSkipped = "compression_skipped"
 )
 
 // Handler receives the event name and a free-form payload map.

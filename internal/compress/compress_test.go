@@ -184,7 +184,7 @@ func TestPassSummarizeMiddleFallback(t *testing.T) {
 		{Role: "model", Parts: []*genai.Part{{Text: "almost done"}}},
 		{Role: "user", Parts: []*genai.Part{{Text: "good"}}},
 	}
-	out := PassSummarizeMiddle(2, nil)(contents, 2)
+	out := PassSummarizeMiddle(2, nil, "")(contents, 2)
 	if len(out) != 2+1+2 {
 		t.Fatalf("expected head(2)+summary(1)+tail(2)=5 turns, got %d", len(out))
 	}
@@ -247,7 +247,7 @@ func TestPipelineEndToEnd(t *testing.T) {
 	beforeTail := contents[len(contents)-1]
 	beforeCount := CountContents(contents)
 
-	newContents, applied := mgr.runPipeline(context.Background(), contents, true)
+	newContents, applied := mgr.runPipeline(context.Background(), mgr.state("", ""), contents, true)
 	if applied == nil {
 		t.Fatal("pipeline returned nil applied list, expected at least one pass")
 	}
