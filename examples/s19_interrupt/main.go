@@ -25,11 +25,11 @@ func main() {
 	must(err)
 	r, err := agentkit.Runner("s19", a)
 	must(err)
-	prompt := "Write a 1000-word essay about distributed systems."
+	prompt := "Write a 1000-word essay about agentic systems."
 	if len(os.Args) > 1 {
 		prompt = os.Args[1]
 	}
-	if err := stream.Print(os.Stdout, agentkit.RunOnce(ctx, r, prompt)); err != nil {
+	if err := stream.Print(os.Stdout, agentkit.RunOnceStream(ctx, r, prompt)); err != nil {
 		fmt.Fprintln(os.Stderr, "run ended:", err)
 	}
 }
