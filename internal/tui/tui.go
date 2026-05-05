@@ -17,10 +17,13 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
 	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/glamour"
@@ -36,8 +39,8 @@ import (
 	"github.com/blouargant/agent-toolkit/core/events"
 )
 
-var oscColorResponseRE = regexp.MustCompile(`(?:^|\s)(?:10|11);rgb:[0-9A-Fa-f]+/[0-9A-Fa-f]+/[0-9A-Fa-f]+(?:\s|$)`)
-var oscColorResponseAtStartRE = regexp.MustCompile(`^(?:10|11);rgb:[0-9A-Fa-f]+/[0-9A-Fa-f]+/[0-9A-Fa-f]+\s*`)
+var oscColorResponseRE = regexp.MustCompile(`(?:^|\s)(?:1|10|11);rgb:[0-9A-Fa-f]+/[0-9A-Fa-f]+/[0-9A-Fa-f]+(?:\s|$)`)
+var oscColorResponseAtStartRE = regexp.MustCompile(`^(?:1|10|11);rgb:[0-9A-Fa-f]+/[0-9A-Fa-f]+/[0-9A-Fa-f]+\s*`)
 
 // stripTerminalControlSequences removes ANSI/OSC/DCS control sequences and
 // non-printable C0 controls from terminal text while keeping line breaks.
@@ -169,7 +172,7 @@ func Run(ctx context.Context, cfg Config) error {
 			return renderer
 		}
 		r, err := glamour.NewTermRenderer(
-			glamour.WithAutoStyle(),
+			glamour.WithStandardStyle("dark"),
 			glamour.WithWordWrap(w),
 		)
 		if err != nil {
@@ -294,6 +297,7 @@ func Run(ctx context.Context, cfg Config) error {
 	status := tview.NewTextView().
 		SetDynamicColors(true).
 		SetTextAlign(tview.AlignLeft)
+	var appRunning atomic.Bool
 	var inputTokensTotal atomic.Int64
 	var outputTokensTotal atomic.Int64
 	setStatus := func() {
@@ -311,7 +315,15 @@ func Run(ctx context.Context, cfg Config) error {
 		AddItem(main, 0, 1, true)
 
 	// Helpers: thread-safe UI updates.
+	// Guard: QueueUpdateDraw in tview v0.42+ is synchronous — it blocks the
+	// caller until the event loop executes the closure. After app.Run()
+	// returns the event loop is gone, so any call would block forever.
+	// appRunning is set to false before the deferred Bus.Emit(SessionEnd)
+	// fires, so handlers that call appendChat/appendTrace bail out early.
 	appendChat := func(format string, args ...any) {
+		if !appRunning.Load() {
+			return
+		}
 		text := fmt.Sprintf(format, args...)
 		app.QueueUpdateDraw(func() {
 			fmt.Fprint(chat, text)
@@ -321,6 +333,9 @@ func Run(ctx context.Context, cfg Config) error {
 		})
 	}
 	appendTrace := func(format string, args ...any) {
+		if !appRunning.Load() {
+			return
+		}
 		ts := time.Now().Format("15:04:05")
 		text := fmt.Sprintf("[gray]%s[-] %s\n", ts, fmt.Sprintf(format, args...))
 		app.QueueUpdateDraw(func() {
@@ -657,6 +672,20 @@ func Run(ctx context.Context, cfg Config) error {
 		app.Stop()
 	}()
 
+	// Catch OS-level SIGINT/SIGTERM so that a second Ctrl+C (which arrives
+	// as a real signal once the terminal begins transitioning out of raw
+	// mode) routes through app.Stop() and lets tcell finish screen.Fini()
+	// before the process exits. Without this the terminal is left in a
+	// broken state for subsequent commands in the same shell session.
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	go func() {
+		for range sigCh {
+			app.Stop()
+		}
+	}()
+
 	// Welcome banner. Write directly: app.Run() hasn't started yet, so
 	// QueueUpdateDraw would deadlock (its queue is only drained by Run).
 	fmt.Fprintf(chat, "[gray]Welcome to %s. Type a message and press Enter.\nTab / Shift-Tab to scroll Chat or Trace panes. Esc returns focus to input. Ctrl-L clears the chat. Ctrl-C to quit.[-]\n", cfg.AppName)
@@ -717,7 +746,14 @@ func Run(ctx context.Context, cfg Config) error {
 		return false
 	})
 
-	return app.SetRoot(root, true).Run()
+	appRunning.Store(true)
+	err := app.SetRoot(root, true).Run()
+	// Mark the app as no longer running BEFORE deferred calls execute.
+	// This prevents the deferred Bus.Emit(EventSessionEnd) handler from
+	// calling appendTrace/appendChat → QueueUpdateDraw, which would block
+	// forever because the event loop has already exited.
+	appRunning.Store(false)
+	return err
 }
 
 // shortArgs renders tool args compactly for the inline chat display.

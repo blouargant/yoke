@@ -20,6 +20,15 @@ func TestSanitizeInputText_RemovesOSCColorArtifacts(t *testing.T) {
 	}
 }
 
+func TestSanitizeInputText_RemovesOSCColorArtifactVariant1(t *testing.T) {
+	in := "1;rgb:1c1c/1c1c/1f1f list pods"
+	got := sanitizeInputText(in)
+	want := "list pods"
+	if got != want {
+		t.Fatalf("sanitizeInputText() = %q, want %q", got, want)
+	}
+}
+
 func TestSanitizeInputText_KeepsRegularText(t *testing.T) {
 	in := "list pods in test-system"
 	got := sanitizeInputText(in)
