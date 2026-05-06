@@ -117,6 +117,65 @@ func sanitizeInputText(s string) string {
 	return oscColorResponseRE.ReplaceAllString(s, " ")
 }
 
+// markdownRenderer caches Glamour renderers by width. The chat TextView keeps
+// basic wrapping enabled as a display guard, but word wrapping belongs here so
+// Markdown tables and headings are wrapped before ANSI styling reaches tview.
+type markdownRenderer struct {
+	mu       sync.Mutex
+	width    int
+	renderer *glamour.TermRenderer
+}
+
+func (r *markdownRenderer) rendererFor(width int) *glamour.TermRenderer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if width < 20 {
+		width = 80
+	}
+	if r.renderer != nil && r.width == width {
+		return r.renderer
+	}
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStandardStyle("dark"),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return nil
+	}
+	r.renderer = renderer
+	r.width = width
+	return renderer
+}
+
+func (r *markdownRenderer) render(markdown string, width int) string {
+	markdown = strings.TrimSpace(stripTerminalControlSequences(markdown))
+	if markdown == "" {
+		return ""
+	}
+	renderer := r.rendererFor(width)
+	if renderer == nil {
+		return markdown + "\n"
+	}
+	out, err := renderer.Render(markdown)
+	if err != nil {
+		return markdown + "\n"
+	}
+	return out
+}
+
+func newChatTextView(changed func()) *tview.TextView {
+	chat := tview.NewTextView().
+		SetDynamicColors(true).
+		SetScrollable(true).
+		SetWrap(true).
+		SetWordWrap(false)
+	chat.SetBorder(true).SetTitle(" Chat ").SetTitleAlign(tview.AlignLeft)
+	if changed != nil {
+		chat.SetChangedFunc(changed)
+	}
+	return chat
+}
+
 // Config bundles everything the TUI needs to run.
 type Config struct {
 	Runner                     *runner.Runner
@@ -154,58 +213,10 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	app := tview.NewApplication()
-
-	// Markdown renderer (lazy init: width depends on terminal). Falls
-	// back to raw text if glamour fails.
-	var (
-		mdMu     sync.Mutex
-		mdWidth  int
-		renderer *glamour.TermRenderer
-	)
-	getRenderer := func(w int) *glamour.TermRenderer {
-		mdMu.Lock()
-		defer mdMu.Unlock()
-		if w < 20 {
-			w = 80
-		}
-		if renderer != nil && mdWidth == w {
-			return renderer
-		}
-		r, err := glamour.NewTermRenderer(
-			glamour.WithStandardStyle("dark"),
-			glamour.WithWordWrap(w),
-		)
-		if err != nil {
-			return nil
-		}
-		renderer = r
-		mdWidth = w
-		return renderer
-	}
-	renderMarkdown := func(md string, width int) string {
-		md = strings.TrimSpace(stripTerminalControlSequences(md))
-		if md == "" {
-			return ""
-		}
-		r := getRenderer(width)
-		if r == nil {
-			return md + "\n"
-		}
-		out, err := r.Render(md)
-		if err != nil {
-			return md + "\n"
-		}
-		return out
-	}
+	markdown := &markdownRenderer{}
 
 	// ── Right pane: chat history + input ────────────────────────────────
-	chat := tview.NewTextView().
-		SetDynamicColors(true).
-		SetScrollable(true).
-		SetWrap(true).
-		SetWordWrap(true)
-	chat.SetBorder(true).SetTitle(" Chat ").SetTitleAlign(tview.AlignLeft)
-	chat.SetChangedFunc(func() { app.Draw() })
+	chat := newChatTextView(func() { app.Draw() })
 	// ANSIWriter translates glamour's ANSI escape sequences into tview
 	// color tags so styled markdown actually renders inside the TextView.
 	chatANSI := tview.ANSIWriter(chat)
@@ -453,7 +464,7 @@ func Run(ctx context.Context, cfg Config) error {
 			return
 		}
 		w := chatWidth()
-		out := renderMarkdown(text, w)
+		out := markdown.render(text, w)
 		app.QueueUpdateDraw(func() {
 			fmt.Fprint(chatANSI, out)
 			if app.GetFocus() != chat {
@@ -693,7 +704,7 @@ func Run(ctx context.Context, cfg Config) error {
 	// Pre-warm markdown rendering so the first assistant turn avoids
 	// renderer initialization cost on the critical path.
 	go func() {
-		r := getRenderer(80)
+		r := markdown.rendererFor(80)
 		if r == nil {
 			return
 		}
@@ -736,7 +747,7 @@ func Run(ctx context.Context, cfg Config) error {
 		if !resizeWarmupDone && w != initialChatWidth {
 			resizeWarmupDone = true
 			go func(width int) {
-				r := getRenderer(width)
+				r := markdown.rendererFor(width)
 				if r == nil {
 					return
 				}

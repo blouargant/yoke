@@ -317,7 +317,7 @@ func buildSubAgentCapabilitiesBlock(runtimeAgents []RuntimeAgentConfig, runtime 
 
 	var sb strings.Builder
 	sb.WriteString("\n\n# Available Sub-Agents\n\n")
-	sb.WriteString("The following sub-agents are mounted as tools and can be invoked when delegation is appropriate. Each sub-agent only sees the tools listed under it. When a sub-agent owns a skill that matches the user's request, delegate to that sub-agent and explicitly tell it which skill to load (e.g. \"use the k8s-triage skill\").\n\n")
+	sb.WriteString("The following sub-agents are mounted as tools. Invoke them by name — they return their findings to you automatically. Call at most one sub-agent at a time; wait for its findings before deciding whether another sub-agent call is needed. When a sub-agent owns a skill that matches the user's request, delegate to that sub-agent and explicitly tell it which skill to load (e.g. \"use the k8s-triage skill\"). Never use transfer_to_agent — it permanently hands off control.\n\n")
 
 	for _, cfg := range enabled {
 		desc := cfg.Description
@@ -566,7 +566,12 @@ func NewAgent(ctx context.Context, opts Options) (*AgentResult, error) {
 
 		subAgents = append(subAgents, sa)
 		subAgentMap[cfg.Name] = sa
-		leadTools = append(leadTools, agenttool.New(sa, &agenttool.Config{}))
+		wrappedSubAgent, ok := agenttool.New(sa, &agenttool.Config{}).(runnableTool)
+		if !ok {
+			be.Close()
+			return nil, fmt.Errorf("agenttool for %q is not runnable", cfg.Name)
+		}
+		leadTools = append(leadTools, newNonConcurrentTool(wrappedSubAgent))
 	}
 
 	leaderDescription := leaderCfg.Description
@@ -587,7 +592,10 @@ func NewAgent(ctx context.Context, opts Options) (*AgentResult, error) {
 		Model:       orchestratorLLM,
 		Tools:       leadTools,
 		Toolsets:    toolsets,
-		SubAgents:   subAgents,
+		// SubAgents intentionally omitted: passing sub-agents here causes ADK to
+		// inject a transfer_to_agent function that permanently transfers control
+		// (no automatic return). Sub-agents are reached via their agenttool
+		// wrappers already in leadTools, which always return control to the leader.
 		Instruction: leaderInstruction,
 	})
 	if err != nil {

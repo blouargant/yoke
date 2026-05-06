@@ -33,7 +33,7 @@ component X to be part of the running agent".
    └────────────────────────────────────────────────────────┘
                    │
                    ▼
-            agentkit.New({Tools, Toolsets, SubAgents}) ──► lead
+            agentkit.New({Tools, Toolsets}) ──► lead
                    │
                    ▼
             adkagent.NewMultiLoader(lead, investigator, summariser)
@@ -54,6 +54,15 @@ Place it **before** the lead's `agentkit.New(...)` call.
 
 ### Add a sub-agent
 
+> **Important:** do NOT pass sub-agents to `SubAgents` in the lead's
+> `agentkit.AgentConfig`. When `SubAgents` is non-empty, ADK injects a
+> `transfer_to_agent` function into the lead. That function permanently
+> hands off control — the lead never resumes after the call. Use
+> `agenttool.New` instead: it wraps the sub-agent as a regular tool that
+> returns its output to the caller. In the root agent, also wrap the
+> AgentTool with `newNonConcurrentTool` so duplicate calls to the same
+> sub-agent in one model turn fail fast instead of blocking the turn.
+
 ```go
 critic, err := agentkit.New(agentkit.AgentConfig{
     Name:        "critic",
@@ -63,12 +72,12 @@ critic, err := agentkit.New(agentkit.AgentConfig{
 })
 if err != nil { return err }
 
-leadTools = append(leadTools, agenttool.New(critic, &agenttool.Config{}))
+// Register as a tool so control always returns to the leader.
+wrappedCritic, ok := agenttool.New(critic, &agenttool.Config{}).(runnableTool)
+if !ok { return fmt.Errorf("agenttool for critic is not runnable") }
+leadTools = append(leadTools, newNonConcurrentTool(wrappedCritic))
 
-// And in the lead's SubAgents list:
-SubAgents: []adkagent.Agent{investigator, summariser, critic},
-
-// And in the multi-loader so the launcher can address it:
+// Add to the multi-loader so the launcher can address it:
 loader, err := adkagent.NewMultiLoader(lead, investigator, summariser, critic)
 ```
 
