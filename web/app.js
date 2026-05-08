@@ -24,7 +24,10 @@ let abortCtrl = null;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function setStatus(s) { els.status.textContent = s; }
+function setStatus(s) {
+  els.status.textContent = s;
+  els.status.classList.toggle("active", s !== "");
+}
 
 function authHeaders(extra = {}) {
   return { ...extra, "Authorization": `Bearer ${token}` };
@@ -142,20 +145,35 @@ function setPinnedPrompt(text) {
   els.promptHeader.classList.add("visible");
 }
 
-// Move the pinned prompt into the transcript as a regular history bubble,
-// then hide the header. Called before each new turn.
-function archivePinnedPrompt() {
-  const text = els.promptHeader.textContent;
-  if (!text) return;
+// Insert a user message bubble at the current end of the transcript (before streaming).
+function appendUserBubble(text) {
   const row = document.createElement("div");
-  row.className = "msg-row";
+  row.className = "msg-row msg-row-user";
   const bubble = document.createElement("div");
   bubble.className = "bubble-user";
   bubble.textContent = text;
   row.appendChild(bubble);
   els.transcript.appendChild(row);
-  els.promptHeader.textContent = "";
-  els.promptHeader.classList.remove("visible");
+}
+
+// Update the floating prompt header to show the question that owns the agent
+// interaction currently in view. Takes the last user bubble whose row top is
+// at or above the transcript's visible bottom edge — i.e. the most recent
+// question that has entered the viewport (or scrolled above it).
+function updatePinnedForScroll() {
+  const transcriptRect = els.transcript.getBoundingClientRect();
+  const userBubbles = els.transcript.querySelectorAll(".bubble-user");
+  let activeText = null;
+  for (const bubble of userBubbles) {
+    const rowRect = bubble.parentElement.getBoundingClientRect();
+    if (rowRect.top <= transcriptRect.bottom) activeText = bubble.textContent;
+  }
+  if (activeText !== null) {
+    els.promptHeader.textContent = activeText;
+    els.promptHeader.classList.add("visible");
+  } else {
+    els.promptHeader.classList.remove("visible");
+  }
 }
 
 function clearPinnedPrompt() {
@@ -370,9 +388,9 @@ async function sendMessage() {
   if (!activeSessionId) await newChat();
   if (!activeSessionId) return;
 
-  // Archive the previous turn's prompt into the transcript, then pin the new one.
-  archivePinnedPrompt();
-  setPinnedPrompt(prompt);
+  // Insert the user message into the transcript before streaming starts.
+  appendUserBubble(prompt);
+  scrollBottom();
   els.prompt.value = "";
 
   // Per-segment state: each burst of text between tool calls gets its own bubble.
@@ -540,6 +558,7 @@ async function sendMessage() {
 
 // ─── Event listeners ─────────────────────────────────────────────────────────
 
+els.transcript.addEventListener("scroll", updatePinnedForScroll);
 els.newChat.addEventListener("click", newChat);
 els.setToken.addEventListener("click", promptForToken);
 els.composer.addEventListener("submit", (e) => { e.preventDefault(); sendMessage(); });
