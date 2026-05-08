@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(go mod *)"
+      "Bash(go mod *)",
+      "Bash(make build *)",
+      "Bash(make test *)"
     ]
   }
 }

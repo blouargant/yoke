@@ -65,6 +65,21 @@ type AgentResult struct {
 	// LeaderCacheCreationTokenPricePerMillion is the effective leader cache
 	// creation input token price (Anthropic cache_creation).
 	LeaderCacheCreationTokenPricePerMillion float64
+
+	// RegisterSession registers a session's leader mailbox in the cross-session
+	// registry under displayName. Call this when a new session is created so
+	// other sessions can address it by name.
+	// userID and sessionID must match those used by the ADK runner for this session.
+	RegisterSession func(userID, sessionID, displayName string) error
+	// RenameSession updates the cross-session registry when a session is renamed,
+	// moving the mailbox address from oldName to newName.
+	RenameSession func(oldName, newName string) error
+	// WatchMailbox starts a background goroutine that polls the leader mailbox
+	// for (userID, sessionID). onMessage is called with (friendlyFromName, body)
+	// whenever a message arrives; the message is consumed by the goroutine and
+	// must be handled by the caller (it will NOT appear via teammate_check).
+	// The goroutine exits when ctx is cancelled.
+	WatchMailbox func(ctx context.Context, userID, sessionID string, onMessage func(from, body string))
 }
 
 // Options allows customizing the agent creation.
@@ -134,6 +149,9 @@ func defaultAgentInstruction(name string) string {
 		return `You are a generic Claude-Code-style coordinator. You are not bound to any single domain — what you can do is determined by the tools, skills and MCP servers currently mounted.
 
 Operating method (always, regardless of the task):
+  0. CHECK MAILBOX: call 'teammate_check' at two points every turn:
+       • At the very START, before anything else. If a message is waiting, acknowledge the sender (use 'teammate_tell' to reply if a reply is warranted) and then continue to the user's task.
+       • Just BEFORE writing your final response, after all task work is done. This catches messages that arrived while you were working. Handle them the same way, then include a note in your response that a cross-session message was received and acted on.
   1. RESTATE the user's goal in one sentence and confirm scope before acting on anything irreversible.
   2. DISCOVER SKILLS FIRST: call 'list_skills' at the very start of every non-trivial task to see authored procedures available to YOU. Also consult the "Available Sub-Agents" section below — each sub-agent that owns the 'skills' tool group lists its own skill catalog there. Skills are authoritative — they override your default behaviour.
        • If a skill in YOUR catalog matches the request, call 'load_skill' and follow it.
@@ -151,6 +169,8 @@ Operating method (always, regardless of the task):
 You have no built-in domain expertise. Lean on the mounted skills and tools to discover what is appropriate for the current environment.
 
 Soft-skills: after step 2 (skills discovery), also call 'list_softskills' once to scan curator-distilled procedures from past sessions, and 'load_softskill' the relevant one before planning. Treat soft-skills as hints, not authority — defer to authored skills, tool docs and the user when they disagree.
+
+Cross-session communication: use 'teammate_list' to discover other active sessions, 'teammate_ask' to query a peer and wait for its reply, and 'teammate_tell' to send a one-way notification. When asked to notify another session once a task is complete, send the message with 'teammate_tell' immediately after the task finishes — do not wait for the user to prompt you again.
 
 IMPORTANT — loader pairing (do not mix):
   • Names returned by 'list_skills'      MUST be loaded with 'load_skill'.
@@ -446,13 +466,20 @@ func NewAgent(ctx context.Context, opts Options) (*AgentResult, error) {
 	// All session-scoped components share the same (userID, sessionID)
 	// → suffix mapping so a given session's task graph, plan, mailbox
 	// and background queue all line up on disk and on the wire.
-	// The suffix uses the agent build timestamp so log filenames are
-	// human-readable and sortable without needing the ADK session UUID.
+	//
+	// When a sessionID is provided (web sessions use petnames such as
+	// "happy-panda") it is used directly so each session gets a stable,
+	// human-readable suffix that survives server restarts.  For sessions
+	// without an ID (CLI / console mode) we fall back to the build
+	// timestamp to preserve the existing isolation behaviour.
 	buildTimestamp := time.Now().Format("20060102_150405")
 	sessionSuffix := func(userID, sessionID string) string {
 		u := sanitizeID(userID)
 		if u == "" {
 			u = "anon"
+		}
+		if s := sanitizeID(sessionID); s != "" {
+			return u + "_" + s
 		}
 		return u + "_" + buildTimestamp
 	}
@@ -518,10 +545,19 @@ func NewAgent(ctx context.Context, opts Options) (*AgentResult, error) {
 		return sessionSuffix(u, s) + ":" + name
 	}
 
+	// Cross-session registry: maps session display names (petnames or
+	// user-assigned titles) to their leader mailbox addresses so that a
+	// leader in one session can address the leader in another by name.
+	reg := teammates.NewSessionRegistry(".mailboxes")
+
 	leadMailbox := teammates.NewAgent("leader", be)
 	// Namespace mailbox names per session so two concurrent sessions
 	// running an agent named "leader" never share an inbox.
 	leadMailbox.NameFunc = nameFunc
+	// Attach the cross-session registry only to the leader so that
+	// intra-session sub-agents (investigator, summariser, …) are not
+	// accidentally exposed as cross-session targets.
+	leadMailbox.Registry = reg
 	leadTools = append(leadTools, leadMailbox.Tools()...)
 
 	// Event bus — created here (rather than later, with the rest of the
@@ -722,6 +758,40 @@ func NewAgent(ctx context.Context, opts Options) (*AgentResult, error) {
 			PluginConfig:      runner.PluginConfig{Plugins: plugins},
 		},
 		AgentLoader: loader,
+		RegisterSession: func(userID, sessionID, displayName string) error {
+			addr := nameFunc(userID, sessionID, "leader")
+			return reg.Register(displayName, addr)
+		},
+		RenameSession: func(oldName, newName string) error {
+			return reg.Rename(oldName, newName)
+		},
+		WatchMailbox: func(ctx context.Context, userID, sessionID string, onMessage func(from, body string)) {
+			addr := nameFunc(userID, sessionID, "leader")
+			go func() {
+				for {
+					m, err := be.Receive(ctx, addr, 2*time.Second)
+					if err != nil {
+						if ctx.Err() != nil {
+							return
+						}
+						continue
+					}
+					if m == nil {
+						continue
+					}
+					// Resolve the sender's mailbox address to a friendly session
+					// name via registry reverse-lookup; fall back to the raw address.
+					from := m.From
+					for name, maddr := range reg.List() {
+						if maddr == m.From {
+							from = name
+							break
+						}
+					}
+					onMessage(from, m.Body)
+				}
+			}()
+		},
 	}, nil
 }
 

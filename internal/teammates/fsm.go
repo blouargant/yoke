@@ -57,6 +57,12 @@ type Agent struct {
 	// through unchanged (back-compat).
 	NameFunc func(userID, sessionID, name string) string
 
+	// Registry, if set, is consulted before NameFunc. If the logical name
+	// resolves to a known session alias (petname or user-assigned title),
+	// the stored mailbox address is returned directly without applying
+	// NameFunc, enabling cross-session communication.
+	Registry *SessionRegistry
+
 	mu    sync.Mutex
 	state AgentState
 }
@@ -67,8 +73,20 @@ func NewAgent(name string, b Backend) *Agent {
 }
 
 // resolveName returns the effective mailbox name for `logical` given the
-// caller's tool.Context. Falls back to logical when no NameFunc / no IDs.
+// caller's tool.Context.
+//
+// Resolution order:
+//  1. Cross-session registry: if Registry is set and logical matches a known
+//     session alias, return the stored mailbox address directly (bypasses
+//     NameFunc so the address is not re-scoped to the current session).
+//  2. NameFunc: apply the per-session namespace transformation.
+//  3. Fall back to logical unchanged.
 func (a *Agent) resolveName(ctx tool.Context, logical string) string {
+	if a.Registry != nil {
+		if addr, ok := a.Registry.Lookup(logical); ok {
+			return addr
+		}
+	}
 	if a.NameFunc == nil {
 		return logical
 	}
@@ -211,9 +229,11 @@ func (a *Agent) checkWith(ctx context.Context, name string, timeout time.Duratio
 func (a *Agent) Tools() []tool.Tool {
 	ask, _ := functiontool.New(functiontool.Config{
 		Name: "teammate_ask",
-		Description: "Send a question to another agent (by name) and wait up to 30s for a reply. " +
-			"Use when you need information another agent owns. " +
-			"Arguments: `to` (string, required, recipient mailbox name), `question` (string, required, question text).",
+		Description: "Send a question to another agent and block up to 30s for a reply. " +
+			"`to` accepts an intra-session agent name (e.g. 'investigator') or a cross-session name " +
+			"(petname such as 'happy-panda', or user-assigned title such as 'my-project'). " +
+			"Use teammate_list to discover available cross-session peers. " +
+			"Arguments: `to` (string, required), `question` (string, required).",
 	}, func(ctx tool.Context, in askIn) (askOut, error) {
 		if strings.TrimSpace(in.To) == "" || strings.TrimSpace(in.Question) == "" {
 			return askOut{Reply: "Error: required arguments: to and question"}, nil
@@ -227,8 +247,11 @@ func (a *Agent) Tools() []tool.Tool {
 		return askOut{Reply: reply}, nil
 	})
 	tell, _ := functiontool.New(functiontool.Config{
-		Name:        "teammate_tell",
-		Description: "Send a one-way message to another agent. Arguments: `to` (string, required, recipient mailbox name), `body` (string, required, message text). No reply.",
+		Name: "teammate_tell",
+		Description: "Send a one-way message to another agent (no reply expected). " +
+			"`to` accepts an intra-session agent name or a cross-session name (petname or title). " +
+			"The recipient's next teammate_check will surface this message along with your session name in the [From] field. " +
+			"Arguments: `to` (string, required), `body` (string, required).",
 	}, func(ctx tool.Context, in tellIn) (tellOut, error) {
 		if strings.TrimSpace(in.To) == "" || strings.TrimSpace(in.Body) == "" {
 			return tellOut{Result: "Error: required arguments: to and body"}, nil
@@ -241,8 +264,10 @@ func (a *Agent) Tools() []tool.Tool {
 		return tellOut{Result: "delivered"}, nil
 	})
 	check, _ := functiontool.New(functiontool.Config{
-		Name:        "teammate_check",
-		Description: "Check your own mailbox for a pending message (waits up to 1s). Returns '(none)' if empty.",
+		Name: "teammate_check",
+		Description: "Check your own mailbox for one pending message (waits up to 1s). " +
+			"Returns the message with a [From] field showing the sender's session name, or '(none)' if empty. " +
+			"Call this at the start of every response turn so cross-session messages are never missed.",
 	}, func(ctx tool.Context, _ checkIn) (checkOut, error) {
 		name := a.resolveName(ctx, a.Name)
 		m, err := a.checkWith(context.Background(), name, time.Second)
@@ -254,5 +279,20 @@ func (a *Agent) Tools() []tool.Tool {
 		}
 		return checkOut{Message: fmt.Sprintf("[%s] %s", m.From, m.Body)}, nil
 	})
-	return []tool.Tool{ask, tell, check}
+
+	type listOut struct {
+		Sessions map[string]string `json:"sessions"`
+	}
+	list, _ := functiontool.New(functiontool.Config{
+		Name: "teammate_list",
+		Description: "List all known agent sessions available for cross-session communication. " +
+			"Returns a map of session name (petname or user-assigned title) to its leader mailbox address.",
+	}, func(_ tool.Context, _ struct{}) (listOut, error) {
+		if a.Registry == nil {
+			return listOut{Sessions: map[string]string{}}, nil
+		}
+		return listOut{Sessions: a.Registry.List()}, nil
+	})
+
+	return []tool.Tool{ask, tell, check, list}
 }

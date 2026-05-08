@@ -78,12 +78,41 @@ func run() error {
 	}
 
 	registry := newRegistry()
+
+	runGuard := newSessionRunGuard()
+	pushEvents := newSessionPushBroadcaster()
+	pushMgr := newPushManager(runGuard, pushEvents, result.WatchMailbox)
+
+	// Start watchers for sessions that were persisted from a previous run.
+	for _, meta := range registry.List() {
+		_ = result.RegisterSession(meta.UserID, meta.ID, func() string {
+			if meta.Title != "" {
+				return meta.Title
+			}
+			return meta.ID
+		}())
+		pushMgr.Watch(rootCtx, serverDeps{
+			Runner:     r,
+			Registry:   registry,
+			RunGuard:   runGuard,
+			PushEvents: pushEvents,
+			WatchMailbox: result.WatchMailbox,
+		}, meta.ID, meta.UserID)
+	}
+
 	engine := newEngine(serverDeps{
-		Token:       token,
-		Runner:      r,
-		Registry:    registry,
-		WebDir:      webDir,
-		AgentEvents: newAgentEventBroadcaster(result.EventBus),
+		Token:           token,
+		Runner:          r,
+		Registry:        registry,
+		WebDir:          webDir,
+		AgentEvents:     newAgentEventBroadcaster(result.EventBus),
+		RegisterSession: result.RegisterSession,
+		RenameSession:   result.RenameSession,
+		WatchMailbox:    result.WatchMailbox,
+		RunGuard:        runGuard,
+		PushMgr:         pushMgr,
+		PushEvents:      pushEvents,
+		rootCtx:         rootCtx,
 	})
 
 	srv := &http.Server{

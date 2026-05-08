@@ -31,6 +31,13 @@ const sessionAbortCtrls = new Map(); // sessionId → AbortController
 const sessionSending    = new Set(); // sessionIds currently streaming
 const sessionStatus     = new Map(); // sessionId → status string
 
+// ─── Per-session push event subscriptions ────────────────────────────────────
+// Each open session has a persistent SSE connection to /api/sessions/:id/events
+// so background mailbox-push turns are reflected in real time.
+
+const sessionEventsCtrls = new Map(); // sessionId → AbortController
+const sessionTurnCounts  = new Map(); // sessionId → number of turns rendered
+
 function setSessionStatus(sessionId, s) {
   sessionStatus.set(sessionId, s);
   if (sessionId === activeSessionId) setStatus(s);
@@ -183,9 +190,15 @@ function renderMarkdown(el, text) {
 
 // ─── Pinned prompt header ────────────────────────────────────────────────────
 
+// Reduce a (possibly huge / multi-line) user prompt to a one-line label.
+function pinnedPromptLabel(text) {
+  const firstLine = String(text || "").split("\n", 1)[0];
+  return firstLine.length > 300 ? firstLine.slice(0, 300) + "…" : firstLine;
+}
+
 // Show text in the fixed header above the transcript.
 function setPinnedPrompt(text) {
-  els.promptHeader.textContent = text;
+  els.promptHeader.textContent = pinnedPromptLabel(text);
   els.promptHeader.classList.add("visible");
 }
 
@@ -214,7 +227,7 @@ function updatePinnedForScroll() {
     if (rowRect.bottom < transcriptRect.top) activeText = bubble.textContent;
   }
   if (activeText !== null) {
-    els.promptHeader.textContent = activeText;
+    els.promptHeader.textContent = pinnedPromptLabel(activeText);
     els.promptHeader.classList.add("visible");
   } else {
     els.promptHeader.classList.remove("visible");
@@ -401,6 +414,9 @@ function renderSessions(sessions) {
 async function deleteSession(id, li) {
   try {
     await apiFetch(`/api/sessions/${id}`, { method: "DELETE" });
+    unsubscribeSessionEvents(id);
+    sessionTurnCounts.delete(id);
+    sessionContainers.delete(id);
     if (activeSessionId === id) {
       activeSessionId = null;
       clearPinnedPrompt();
@@ -445,6 +461,11 @@ function startRename(li, id, currentTitle) {
 }
 
 async function selectSession(id) {
+  // Unsubscribe from the previous session's push events.
+  if (activeSessionId && activeSessionId !== id) {
+    unsubscribeSessionEvents(activeSessionId);
+  }
+
   activeSessionId = id;
   clearPinnedPrompt();
   for (const li of els.list.children) {
@@ -453,13 +474,18 @@ async function selectSession(id) {
 
   applySessionUI(id);
 
+  // Subscribe to background push events for the newly opened session.
+  subscribeSessionEvents(id);
+
   const container = getContainer(id);
 
   // If the container already has content it's either a live stream in progress
-  // or was previously viewed — just show it without re-fetching.
+  // or was previously viewed — show it and check for background turns that
+  // arrived while this session was not the active view.
   if (container.childNodes.length > 0) {
     mountSession(id);
     scrollBottom();
+    await appendNewPushTurns(id);
     return;
   }
 
@@ -470,9 +496,10 @@ async function selectSession(id) {
     if (!res.ok) return;
     const data = await res.json();
     const turns = data.turns || [];
+    sessionTurnCounts.set(id, turns.length);
     if (turns.length === 0) {
       const row = document.createElement("div");
-      row.className = "msg-row";
+      row.className = "msg-row no-messages-placeholder";
       const b = document.createElement("div");
       b.className = "bubble-assistant";
       b.style.opacity = ".4";
@@ -501,8 +528,85 @@ async function newChat() {
     clearPinnedPrompt();
     mountSession(activeSessionId);
     applySessionUI(activeSessionId);
+    subscribeSessionEvents(activeSessionId);
     await loadSessions();
   } catch (e) { console.error(e); }
+}
+
+// ─── Background push helpers ─────────────────────────────────────────────────
+
+// subscribeSessionEvents opens a persistent SSE connection for sessionId and
+// reloads new turns whenever the server emits a mailbox_push event.
+async function subscribeSessionEvents(sessionId) {
+  if (sessionEventsCtrls.has(sessionId)) {
+    sessionEventsCtrls.get(sessionId).abort();
+  }
+  const ctrl = new AbortController();
+  sessionEventsCtrls.set(sessionId, ctrl);
+  try {
+    const res = await apiFetch(`/api/sessions/${sessionId}/events`, {
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return;
+    for await (const { event } of parseSSE(res)) {
+      if (event === "mailbox_push" && !sessionSending.has(sessionId)) {
+        await appendNewPushTurns(sessionId);
+      }
+    }
+  } catch (e) {
+    if (e.name !== "AbortError") {
+      console.error("push events error for", sessionId, e);
+    }
+  }
+}
+
+function unsubscribeSessionEvents(sessionId) {
+  const ctrl = sessionEventsCtrls.get(sessionId);
+  if (ctrl) { ctrl.abort(); sessionEventsCtrls.delete(sessionId); }
+}
+
+// appendNewPushTurns fetches the full history and renders any turns that
+// arrived after the last locally-known count (background turns).
+async function appendNewPushTurns(sessionId) {
+  try {
+    const res = await apiFetch(`/api/sessions/${sessionId}/messages`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const turns = data.turns || [];
+    const rendered = sessionTurnCounts.get(sessionId) ?? 0;
+    if (turns.length <= rendered) return;
+
+    const container = getContainer(sessionId);
+    // Remove "No messages yet" placeholder before inserting real content.
+    const placeholder = container.querySelector(".no-messages-placeholder");
+    if (placeholder) placeholder.remove();
+
+    for (let i = rendered; i < turns.length; i++) {
+      appendUserBubble(turns[i].user_text, container);
+      const bubble = appendAssistantBubble(container);
+      renderMarkdown(bubble, turns[i].assistant_text);
+    }
+    sessionTurnCounts.set(sessionId, turns.length);
+
+    if (sessionId === activeSessionId) {
+      // Defer scroll until after the browser has reflowed the rendered markdown.
+      requestAnimationFrame(scrollBottom);
+      showPushBanner(container);
+    }
+    // Refresh sidebar turn counter.
+    loadSessions();
+  } catch (e) {
+    console.error("appendNewPushTurns failed:", e);
+  }
+}
+
+// showPushBanner inserts a temporary notice into the transcript container.
+function showPushBanner(container) {
+  const banner = document.createElement("div");
+  banner.className = "push-banner";
+  banner.textContent = "📬 Background message received and processed";
+  container.appendChild(banner);
+  setTimeout(() => banner.remove(), 4000);
 }
 
 // ─── SSE parser ──────────────────────────────────────────────────────────────
@@ -709,6 +813,8 @@ async function sendMessage() {
     sessionSending.delete(sessionId);
     sessionStatus.delete(sessionId);
     if (sessionId === activeSessionId) applySessionUI(sessionId);
+    // Track turn count so appendNewPushTurns knows where to start.
+    sessionTurnCounts.set(sessionId, (sessionTurnCounts.get(sessionId) ?? 0) + 1);
     loadSessions();
     scrollBottom();
   }

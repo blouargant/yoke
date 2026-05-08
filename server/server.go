@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -23,6 +25,21 @@ type serverDeps struct {
 	Registry    *registry
 	WebDir      string
 	AgentEvents *agentEventBroadcaster
+	// RegisterSession registers a newly created session in the cross-session
+	// mailbox registry so other leaders can address it by name.
+	RegisterSession func(userID, sessionID, displayName string) error
+	// RenameSession updates the cross-session registry when a session title changes.
+	RenameSession func(oldName, newName string) error
+	// WatchMailbox is forwarded from AgentResult to wire up per-session push.
+	WatchMailbox func(ctx context.Context, userID, sessionID string, onMessage func(from, body string))
+	// RunGuard serialises runner calls per session (shared with pushManager).
+	RunGuard *sessionRunGuard
+	// PushMgr manages per-session background mailbox watchers.
+	PushMgr *pushManager
+	// PushEvents broadcasts push notifications to open /events SSE connections.
+	PushEvents *sessionPushBroadcaster
+	// rootCtx is the server's root context; used to scope watcher goroutines.
+	rootCtx context.Context
 }
 
 // agentBusEvent is a single event from the shared event bus forwarded to an
@@ -99,6 +116,12 @@ func newEngine(d serverDeps) *gin.Engine {
 	auth := api.Group("", authMiddleware(d.Token))
 	auth.POST("/sessions", func(c *gin.Context) {
 		meta := d.Registry.New()
+		if d.RegisterSession != nil {
+			_ = d.RegisterSession(defaultUserID, meta.ID, meta.ID)
+		}
+		if d.PushMgr != nil {
+			d.PushMgr.Watch(d.rootCtx, d, meta.ID, defaultUserID)
+		}
 		c.JSON(http.StatusCreated, gin.H{
 			"session_id": meta.ID,
 			"created_at": meta.CreatedAt,
@@ -113,7 +136,59 @@ func newEngine(d serverDeps) *gin.Engine {
 			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 			return
 		}
+		if d.PushMgr != nil {
+			d.PushMgr.Stop(id)
+		}
 		c.Status(http.StatusNoContent)
+	})
+	// GET /api/sessions/:id/events — persistent SSE stream that fires a
+	// "mailbox_push" event whenever a background mailbox turn completes for
+	// this session. The browser subscribes once per session and reloads
+	// conversation history on each push.
+	auth.GET("/sessions/:id/events", func(c *gin.Context) {
+		id := c.Param("id")
+		if _, ok := d.Registry.Get(id); !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+
+		h := c.Writer.Header()
+		h.Set("Content-Type", "text/event-stream")
+		h.Set("Cache-Control", "no-cache")
+		h.Set("Connection", "keep-alive")
+		h.Set("X-Accel-Buffering", "no")
+		c.Writer.WriteHeader(http.StatusOK)
+		flusher, _ := c.Writer.(interface{ Flush() })
+		flush := func() {
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		flush()
+
+		var ch chan struct{}
+		if d.PushEvents != nil {
+			ch = d.PushEvents.subscribe(id)
+			defer d.PushEvents.unsubscribe(id, ch)
+		} else {
+			ch = make(chan struct{})
+		}
+
+		heartbeat := time.NewTicker(30 * time.Second)
+		defer heartbeat.Stop()
+		ctx := c.Request.Context()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ch:
+				_, _ = io.WriteString(c.Writer, "event: mailbox_push\ndata: {}\n\n")
+				flush()
+			case <-heartbeat.C:
+				_, _ = io.WriteString(c.Writer, ": keepalive\n\n")
+				flush()
+			}
+		}
 	})
 	auth.PATCH("/sessions/:id", func(c *gin.Context) {
 		id := c.Param("id")
@@ -123,6 +198,18 @@ func newEngine(d serverDeps) *gin.Engine {
 			return
 		}
 		title := strings.TrimSpace(body.Title)
+
+		// Capture the current display name before updating so we can rename
+		// the mailbox registry entry from the old name to the new one.
+		var oldName string
+		if meta, ok := d.Registry.Get(id); ok {
+			if meta.Title != "" {
+				oldName = meta.Title
+			} else {
+				oldName = meta.ID
+			}
+		}
+
 		if !d.Registry.SetTitle(id, title) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 			return
@@ -131,6 +218,17 @@ func newEngine(d serverDeps) *gin.Engine {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+
+		// Keep the mailbox registry in sync: move the entry from the old
+		// display name to the new title (or back to petname if title cleared).
+		if d.RenameSession != nil && oldName != "" {
+			newName := title
+			if newName == "" {
+				newName = id // title cleared → revert to petname
+			}
+			_ = d.RenameSession(oldName, newName)
+		}
+
 		meta, _ := d.Registry.Get(id)
 		c.JSON(http.StatusOK, meta)
 	})

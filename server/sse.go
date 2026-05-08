@@ -59,6 +59,13 @@ func handleMessages(d serverDeps) gin.HandlerFunc {
 		defer d.AgentEvents.unsubscribe(subCh)
 
 		ctx := c.Request.Context()
+
+		// Serialise with any background mailbox-push turn for this session.
+		if d.RunGuard != nil {
+			release := d.RunGuard.acquire(meta.ID)
+			defer release()
+		}
+
 		seq := d.Runner.Run(ctx, meta.UserID, meta.ID,
 			&genai.Content{Role: "user", Parts: []*genai.Part{{Text: req.Prompt}}},
 			agent.RunConfig{StreamingMode: agent.StreamingModeSSE})
