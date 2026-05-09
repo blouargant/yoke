@@ -16,22 +16,18 @@ import (
 	"time"
 
 	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/agent/llmagent"
 	"google.golang.org/adk/model"
 	"google.golang.org/adk/plugin"
 	"google.golang.org/adk/runner"
 	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/agenttool"
+	"gopkg.in/yaml.v3"
 
 	"github.com/blouargant/agent-toolkit/core/agentkit"
 	"github.com/blouargant/agent-toolkit/core/events"
 	"github.com/blouargant/agent-toolkit/core/llm"
-	"github.com/blouargant/agent-toolkit/core/permissions"
 	fstools "github.com/blouargant/agent-toolkit/core/tools"
 	"github.com/blouargant/agent-toolkit/internal/bg"
-	"github.com/blouargant/agent-toolkit/internal/cache"
-	"github.com/blouargant/agent-toolkit/internal/compress"
 	mcpcfg "github.com/blouargant/agent-toolkit/internal/mcp"
 	"github.com/blouargant/agent-toolkit/internal/skills"
 	"github.com/blouargant/agent-toolkit/internal/softskills"
@@ -147,58 +143,10 @@ func defaultAgentDescription(name string) string {
 }
 
 func defaultAgentInstruction(name string) string {
-	switch name {
-	case "leader":
-		return `You are a generic Claude-Code-style coordinator. You are not bound to any single domain — what you can do is determined by the tools, skills and MCP servers currently mounted.
-
-Operating method (always, regardless of the task):
-  0. CHECK MAILBOX: call 'teammate_check' at two points every turn:
-       • At the very START, before anything else. If a message is waiting, acknowledge the sender (use 'teammate_tell' to reply if a reply is warranted) and then continue to the user's task.
-       • Just BEFORE writing your final response, after all task work is done. This catches messages that arrived while you were working. Handle them the same way, then include a note in your response that a cross-session message was received and acted on.
-  1. RESTATE the user's goal in one sentence and confirm scope before acting on anything irreversible.
-  2. DISCOVER SKILLS FIRST: call 'list_skills' at the very start of every non-trivial task to see authored procedures available to YOU. Also consult the "Available Sub-Agents" section below — each sub-agent that owns the 'skills' tool group lists its own skill catalog there. Skills are authoritative — they override your default behaviour.
-       • If a skill in YOUR catalog matches the request, call 'load_skill' and follow it.
-       • If a skill in a SUB-AGENT'S catalog matches the request, delegate to that sub-agent and explicitly tell it which skill to load (e.g. "use the k8s-triage skill to answer this").
-  3. PLAN with task_create whenever the work has more than one step. Keep tasks small and verifiable.
-  4. INVESTIGATE before you act: gather evidence using your own read-only tools, MCP servers, or by delegating focused evidence questions to the 'investigator' sub-agent. Ask the investigator for compact cited findings: facts, sources, confidence, and open questions. Never rely on assumptions when a tool can confirm.
-  5. DELEGATE BY DEFAULT — your primary job is to coordinate, not to execute. Whenever a sub-agent listed under "Available Sub-Agents" is a plausible fit for a step, delegate it instead of running the work yourself (no bash, no file edits, no direct MCP calls). Give the sub-agent a precise objective, the exact skill or soft-skill to load, and any constraints.
-       • If a sub-agent comes back with a failure, an empty result, or a wrong answer, DO NOT immediately take over. Re-task it: diagnose what likely went wrong, invent a sharper instruction (different angle, narrower scope, alternative tool, missing context, explicit skill to load, concrete commands to try) and send it back. Iterate at least 2-3 times with genuinely different guidance before considering the sub-agent unable to perform the task.
-       • Only act directly (run bash, edit files, call MCP tools yourself) when (a) no mounted sub-agent is suitable for the step, or (b) suitable sub-agents have repeatedly failed despite refined instructions. State briefly which condition applies before doing so.
-  6. ACT in small reversible steps when you must act yourself. Prefer tools over shell, prefer dry-runs over mutations.
-  7. CONTROL BULK before reasoning: use the 'summariser' sub-agent for oversized raw tool output, verbose investigator reports, or user-requested briefs. As a rule of thumb, summarise material over roughly 150-250 lines or 2k-4k tokens, but do not summarise concise investigator evidence briefs unless they are too large or poorly structured.
-  8. RESPECT permissions: if a tool call is denied, do NOT retry — report and ask the user.
-  9. ESCALATE to the user when ambiguity remains after one round of evidence gathering.
-
-You have no built-in domain expertise. Lean on the mounted skills and tools to discover what is appropriate for the current environment.
-
-Soft-skills: after step 2 (skills discovery), also call 'list_softskills' once to scan curator-distilled procedures from past sessions, and 'load_softskill' the relevant one before planning. Treat soft-skills as hints, not authority — defer to authored skills, tool docs and the user when they disagree.
-
-Cross-session communication: use 'teammate_list' to discover other active sessions, 'teammate_ask' to query a peer and wait for its reply, and 'teammate_tell' to send a one-way notification. When asked to notify another session once a task is complete, send the message with 'teammate_tell' immediately after the task finishes — do not wait for the user to prompt you again. 'teammate_list' also returns a "your_session_name" field — this is YOUR own session name as seen by other sessions in the network. When a received message addresses you by that name, it is referring to you, not a third party.
-
-Communication style: use a professional, direct tone in all responses. Do not use emoticons, exclamation marks for emphasis, or overly familiar language.
-
-IMPORTANT — loader pairing (do not mix):
-  • Names returned by 'list_skills'      MUST be loaded with 'load_skill'.
-  • Names returned by 'list_softskills'  MUST be loaded with 'load_softskill'.
-  Calling 'load_skill' with a soft-skill name (or vice-versa) will fail with "skill not found" because the two loaders read different directories (skills/ vs softskills/).`
-	case "investigator":
-		return `You are an investigator.
-
-Operating method (always):
-  1. Start each non-trivial request by calling 'list_skills'. If a matching skill exists, call 'load_skill' and follow it exactly.
-  2. Call 'list_softskills' once per task and load a relevant soft-skill via 'load_softskill' when useful.
-  3. Use the available read-only tools to collect concrete evidence before drawing any conclusion.
-  4. Return a compact evidence brief, not a raw dump. Include findings, exact sources (file:line, command output, MCP resource id), confidence, and open questions.
-  5. Quote only decisive excerpts. Include bulk output only when it is essential to the user's question.
-  6. Do not modify state.
-  7. If information is missing (e.g. pod name, namespace, time window), list it under "open questions" in your brief — do NOT use teammate_ask or any mailbox tool to request it. The leader will relay unanswered questions to the user.
-
-Loader pairing: 'list_skills' → 'load_skill' (skills/ directory); 'list_softskills' → 'load_softskill' (softskills/ directory). The two loaders are not interchangeable — using the wrong one fails with "skill not found".`
-	case "summariser":
-		return "Reply with: (1) a one-sentence headline, (2) <= 7 bullets of the most important facts, (3) a short list of suggested next actions. Preserve source anchors when present: file paths, line numbers, command names, exact error messages, resource ids, and uncertainty markers. Distinguish facts from guesses. No fluff."
-	default:
-		return "You are a specialist helper. Follow your instruction and use your tools to assist the leader agent."
+	if s := readEmbeddedInstruction(name); s != "" {
+		return s
 	}
+	return readEmbeddedInstruction("default")
 }
 
 func defaultToolKeys(name string) []string {
@@ -302,8 +250,8 @@ func scanSkillCatalog(dir string) []skillCatalogEntry {
 }
 
 // parseSkillFrontMatter extracts the `name` and `description` keys from the
-// YAML block delimited by `---` at the top of a SKILL.md file. It uses a
-// minimal line-based parser to avoid pulling YAML for one purpose.
+// YAML block delimited by `---` at the top of a SKILL.md file. Malformed
+// front matter degrades gracefully to empty values rather than panicking.
 func parseSkillFrontMatter(b []byte) (name, description string) {
 	s := string(b)
 	if !strings.HasPrefix(s, "---") {
@@ -316,21 +264,15 @@ func parseSkillFrontMatter(b []byte) (name, description string) {
 		return "", ""
 	}
 	header := rest[:end]
-	for _, line := range strings.Split(header, "\n") {
-		line = strings.TrimRight(line, "\r")
-		if idx := strings.Index(line, ":"); idx > 0 {
-			key := strings.TrimSpace(line[:idx])
-			val := strings.TrimSpace(line[idx+1:])
-			val = strings.Trim(val, `"'`)
-			switch key {
-			case "name":
-				name = val
-			case "description":
-				description = val
-			}
-		}
+
+	var fm struct {
+		Name        string `yaml:"name"`
+		Description string `yaml:"description"`
 	}
-	return name, description
+	if err := yaml.Unmarshal([]byte(header), &fm); err != nil {
+		return "", ""
+	}
+	return fm.Name, fm.Description
 }
 
 // buildSubAgentCapabilitiesBlock generates a structured block of sub-agent
@@ -508,39 +450,7 @@ func NewAgent(ctx context.Context, opts Options) (*AgentResult, error) {
 	leadTools = append(leadTools, q.Tool())
 	leadTools = append(leadTools, curateSessionTool())
 
-	// Effective directories for the leader's own toolsets: per-agent leader
-	// overrides take precedence over the global runtime defaults.
-	leaderSkillsDir := runtime.SkillsDir
-	if leaderCfg.SkillsDir != "" {
-		leaderSkillsDir = leaderCfg.SkillsDir
-	}
-	leaderSoftSkillsDir := runtime.SoftSkillsDir
-	if leaderCfg.SoftSkillsDir != "" {
-		leaderSoftSkillsDir = leaderCfg.SoftSkillsDir
-	}
-	leaderMCPConfigPath := runtime.MCPConfigPath
-	if leaderCfg.MCPConfigPath != "" {
-		leaderMCPConfigPath = leaderCfg.MCPConfigPath
-	}
-
-	var toolsets []tool.Toolset
-	var skillTS tool.Toolset
-	if ts, err := skills.Toolset(ctx, leaderSkillsDir); err == nil {
-		skillTS = ts
-		toolsets = append(toolsets, ts)
-	}
-	var softSkillTS tool.Toolset
-	if sts, err := softskills.Toolset(ctx, leaderSoftSkillsDir); err == nil {
-		softSkillTS = sts
-		toolsets = append(toolsets, sts)
-	}
-	var mcpToolsets []tool.Toolset
-	if mc, err := mcpcfg.Load(leaderMCPConfigPath); err == nil {
-		if mts, err := mc.Toolsets(); err == nil {
-			mcpToolsets = append(mcpToolsets, mts...)
-			toolsets = append(toolsets, mts...)
-		}
-	}
+	skillTS, softSkillTS, mcpToolsets, toolsets := buildLeaderToolsets(ctx, runtime, leaderCfg)
 
 	be, err := teammates.ChooseBackend()
 	if err != nil {
@@ -574,71 +484,16 @@ func NewAgent(ctx context.Context, opts Options) (*AgentResult, error) {
 	bus := events.NewBus()
 	subAgentCallbacks := bus.AgentCallbacks(events.PluginOptions{IncludeModelRequest: opts.DebugLogging})
 
-	subAgents := []adkagent.Agent{}
-	subAgentMap := map[string]adkagent.Agent{}
-	seenNames := map[string]bool{"leader": true}
-
-	for _, cfg := range runtime.Agents {
-		if cfg.Name == "leader" || !cfg.Enabled {
-			continue
-		}
-		if cfg.Name == "curator" {
-			continue
-		}
-		if seenNames[cfg.Name] {
-			continue
-		}
-		seenNames[cfg.Name] = true
-
-		agentLLM, err := modelForAgent(cfg)
-		if err != nil {
-			be.Close()
-			return nil, err
-		}
-
-		desc := cfg.Description
-		if desc == "" {
-			desc = defaultAgentDescription(cfg.Name)
-		}
-		instr := cfg.Instruction
-		if instr == "" {
-			instr = defaultAgentInstruction(cfg.Name)
-		}
-
-		subTools, subToolsets := toolsForAgentConfig(ctx, cfg, runtime, skillTS, softSkillTS, mcpToolsets)
-		if cfg.Mailbox {
-			mb := teammates.NewAgent(cfg.Name, be)
-			mb.NameFunc = nameFunc
-			subTools = append(subTools, mb.Tools()...)
-		}
-
-		sa, err := agentkit.New(agentkit.AgentConfig{
-			Name:                 cfg.Name,
-			Description:          desc,
-			Instruction:          instr,
-			Model:                agentLLM,
-			Tools:                subTools,
-			Toolsets:             subToolsets,
-			BeforeToolCallbacks:  []llmagent.BeforeToolCallback{subAgentCallbacks.BeforeTool},
-			AfterToolCallbacks:   []llmagent.AfterToolCallback{subAgentCallbacks.AfterTool},
-			OnToolErrorCallbacks: []llmagent.OnToolErrorCallback{subAgentCallbacks.OnToolError},
-			BeforeModelCallbacks: []llmagent.BeforeModelCallback{subAgentCallbacks.BeforeModel},
-			AfterModelCallbacks:  []llmagent.AfterModelCallback{subAgentCallbacks.AfterModel},
-		})
-		if err != nil {
-			be.Close()
-			return nil, err
-		}
-
-		subAgents = append(subAgents, sa)
-		subAgentMap[cfg.Name] = sa
-		wrappedSubAgent, ok := agenttool.New(sa, &agenttool.Config{}).(runnableTool)
-		if !ok {
-			be.Close()
-			return nil, fmt.Errorf("agenttool for %q is not runnable", cfg.Name)
-		}
-		leadTools = append(leadTools, newNonConcurrentTool(wrappedSubAgent))
+	subAgentMap, subAgents, subAgentLeaderTools, err := buildSubAgents(
+		ctx, runtime, be, nameFunc,
+		skillTS, softSkillTS, mcpToolsets,
+		modelForAgent, subAgentCallbacks,
+	)
+	if err != nil {
+		be.Close()
+		return nil, err
 	}
+	leadTools = append(leadTools, subAgentLeaderTools...)
 
 	leaderDescription := leaderCfg.Description
 	if leaderDescription == "" {
@@ -671,62 +526,13 @@ func NewAgent(ctx context.Context, opts Options) (*AgentResult, error) {
 
 	// ── Plugins ──────────────────────────────────────────────────────────
 	// `bus` was created earlier so per-agent callbacks could be attached to
-	// sub-agents at construction time. Here we wire it as a runner-level
-	// plugin so the leader's tool/model activity, plus run start/end, also
-	// flow through it.
-	var plugins []*plugin.Plugin
-	if err := os.MkdirAll("logs", 0o755); err != nil {
-		be.Close()
-		return nil, err
-	}
-	logger, closeLog, err := events.FileLoggerWithOptions(
-		filepath.Join("logs", "agent_events_"+buildTimestamp+".log"),
-		events.FileLoggerOptions{FullPayload: opts.DebugLogging},
-	)
+	// sub-agents at construction time. buildPlugins wires it as a runner-
+	// level plugin so the leader's tool/model activity, plus run start/end,
+	// also flow through it.
+	plugins, err := buildPlugins(runtime, opts, bus, orchestratorLLM, sessionSuffix, buildTimestamp)
 	if err != nil {
 		be.Close()
 		return nil, err
-	}
-	// Note: closeLog should be called when shutting down
-	_ = closeLog
-	for _, ev := range []string{
-		events.EventBeforeTool, events.EventAfterTool,
-		events.EventBeforeModel, events.EventAfterModel,
-		events.EventToolError,
-		events.EventSessionStart, events.EventSessionEnd,
-		events.EventRunStart, events.EventRunEnd,
-		events.EventCurateNow,
-	} {
-		bus.On(ev, logger)
-	}
-	eventsPlugin, err := bus.PluginWithOptions("events", events.PluginOptions{IncludeModelRequest: opts.DebugLogging})
-	if err == nil {
-		eb := eventsPlugin
-		plugins = append(plugins, eb)
-	}
-	if perms, err := permissions.NewPlugin("perms", runtime.PermissionsConfigPath, permissions.StdinAsker{}); err == nil {
-		plugins = append(plugins, perms)
-	}
-	if _, cp, err := cache.Plugin("cache"); err == nil {
-		plugins = append(plugins, cp)
-	}
-	if cmp, _, _, err := compress.PluginWithTools("compress", compress.Config{
-		// Per-session audit file so concurrent users / sessions
-		// never share a counter or overwrite each other's summaries.
-		AuditPathFunc: func(userID, sessionID string) string {
-			return filepath.Join("logs", fmt.Sprintf("agent_memory_%s.md", sessionSuffix(userID, sessionID)))
-		},
-		// Per-session State Log path — consumed by the curator agent
-		// after EventSessionEnd to mine successful procedures.
-		StateLogPathFunc: func(userID, sessionID string) string {
-			return filepath.Join("logs", fmt.Sprintf("agent_statelog_%s.json", sessionSuffix(userID, sessionID)))
-		},
-		LLM: orchestratorLLM,
-	}); err == nil {
-		plugins = append(plugins, cmp)
-		// NOTE: compact_now tool returned here is intentionally not mounted
-		// on the lead in this entry-point; mount it explicitly when wiring
-		// a custom agent (see examples/s06_compress for the pattern).
 	}
 
 	// Curator hook: after each session ends, fire-and-forget the curator
