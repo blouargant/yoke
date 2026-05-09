@@ -671,6 +671,32 @@ body.resizing #sidebar-resize { transition: none; }
   border-color: #007acc;
 }
 
+#edit-mode-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 4px;
+  background: transparent;
+  border: 1px solid #3e3e42;
+  color: #858585;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+#edit-mode-btn:hover {
+  background: #2a2d2e;
+  color: #cccccc;
+  border-color: #007acc;
+}
+#edit-mode-btn.active {
+  background: #1e3a4a;
+  color: #4fc3f7;
+  border-color: #007acc;
+}
+
 /* ─── Slash command menu ────────────────────────────────────── */
 #slash-menu {
   position: absolute;

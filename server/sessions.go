@@ -23,7 +23,7 @@ type SessionMeta struct {
 const defaultUserID = "web-user"
 
 type registry struct {
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	items map[string]*SessionMeta
 }
 
@@ -61,8 +61,8 @@ func (r *registry) uniqueName() string {
 }
 
 func (r *registry) Get(id string) (*SessionMeta, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	m, ok := r.items[id]
 	return m, ok
 }
@@ -100,12 +100,12 @@ func (r *registry) SetTitle(id, title string) bool {
 }
 
 func (r *registry) List() []*SessionMeta {
-	r.mu.Lock()
+	r.mu.RLock()
 	out := make([]*SessionMeta, 0, len(r.items))
 	for _, m := range r.items {
 		out = append(out, m)
 	}
-	r.mu.Unlock()
+	r.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})

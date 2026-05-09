@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,11 @@ type serverDeps struct {
 	PushEvents *sessionPushBroadcaster
 	// rootCtx is the server's root context; used to scope watcher goroutines.
 	rootCtx context.Context
+	// ConfigFiles holds the absolute paths of the YAML files editable from
+	// the web UI (resolved once at startup; never derived from URLs).
+	ConfigFiles configFiles
+	// Restart triggers an in-place self re-exec of the server process.
+	Restart *restartCoordinator
 }
 
 // agentBusEvent is a single event from the shared event bus forwarded to an
@@ -271,6 +277,8 @@ func newEngine(d serverDeps) *gin.Engine {
 	})
 	auth.POST("/sessions/:id/messages", handleMessages(d))
 
+	registerConfigRoutes(auth, d.ConfigFiles, d.Restart)
+
 	auth.POST("/sessions/:id/curate", func(c *gin.Context) {
 		id := c.Param("id")
 		meta, ok := d.Registry.Get(id)
@@ -314,29 +322,8 @@ func requestLogger() gin.HandlerFunc {
 		gin.DefaultWriter.Write([]byte("" +
 			time.Now().Format("15:04:05") + " " +
 			c.Request.Method + " " + path + " " +
-			itoa(c.Writer.Status()) + " " +
+			strconv.Itoa(c.Writer.Status()) + " " +
 			time.Since(start).Truncate(time.Millisecond).String() + "\n"))
 	}
 }
 
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	neg := i < 0
-	if neg {
-		i = -i
-	}
-	var buf [20]byte
-	pos := len(buf)
-	for i > 0 {
-		pos--
-		buf[pos] = byte('0' + i%10)
-		i /= 10
-	}
-	if neg {
-		pos--
-		buf[pos] = '-'
-	}
-	return string(buf[pos:])
-}

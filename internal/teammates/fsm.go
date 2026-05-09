@@ -281,17 +281,29 @@ func (a *Agent) Tools() []tool.Tool {
 	})
 
 	type listOut struct {
-		Sessions map[string]string `json:"sessions"`
+		Sessions        map[string]string `json:"sessions"`
+		YourSessionName string            `json:"your_session_name,omitempty"`
 	}
 	list, _ := functiontool.New(functiontool.Config{
 		Name: "teammate_list",
 		Description: "List all known agent sessions available for cross-session communication. " +
-			"Returns a map of session name (petname or user-assigned title) to its leader mailbox address.",
-	}, func(_ tool.Context, _ struct{}) (listOut, error) {
+			"Returns `sessions` (map of session name to mailbox address) and `your_session_name` " +
+			"(the name other sessions use to address THIS session). " +
+			"When a received message refers to `your_session_name`, it is referring to you.",
+	}, func(ctx tool.Context, _ struct{}) (listOut, error) {
 		if a.Registry == nil {
 			return listOut{Sessions: map[string]string{}}, nil
 		}
-		return listOut{Sessions: a.Registry.List()}, nil
+		sessions := a.Registry.List()
+		myAddr := a.resolveName(ctx, a.Name)
+		var myName string
+		for name, addr := range sessions {
+			if addr == myAddr {
+				myName = name
+				break
+			}
+		}
+		return listOut{Sessions: sessions, YourSessionName: myName}, nil
 	})
 
 	return []tool.Tool{ask, tell, check, list}

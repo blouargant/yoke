@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -96,12 +97,15 @@ func setConversationTitle(sessionID, title string) error {
 }
 
 func deleteConversationFile(sessionID string) {
-	_ = os.Remove(conversationPath(sessionID))
+	if err := os.Remove(conversationPath(sessionID)); err != nil && !os.IsNotExist(err) {
+		log.Printf("history: failed to delete conversation %s: %v", sessionID, err)
+	}
 }
 
 // deleteSessionLogs removes all per-session log files produced by the agent
-// runtime: tasks, todo, memory, and statelog. The conversation file is deleted
-// separately by deleteConversationFile via registry.Delete.
+// runtime: tasks, todo, memory, statelog, and mailbox JSONL files. The
+// conversation file is deleted separately by deleteConversationFile via
+// registry.Delete.
 func deleteSessionLogs(userID, sessionID string) {
 	suffix := agent.SessionSuffix(userID, sessionID)
 	for _, name := range []string{
@@ -111,6 +115,11 @@ func deleteSessionLogs(userID, sessionID string) {
 		fmt.Sprintf("agent_statelog_%s.json", suffix),
 	} {
 		_ = os.Remove(filepath.Join(logsDir, name))
+	}
+	// Delete per-session mailbox files: .mailboxes/<suffix>:*.jsonl
+	matches, _ := filepath.Glob(filepath.Join(".mailboxes", suffix+":*.jsonl"))
+	for _, f := range matches {
+		_ = os.Remove(f)
 	}
 }
 

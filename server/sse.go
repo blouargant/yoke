@@ -194,7 +194,8 @@ func streamEvents(
 				}
 				if p.Text != "" {
 					if !isPartial && sawPartialText && p.FunctionCall == nil {
-						// Skip aggregated duplicate of the streamed text.
+						// ADK emits the full streamed text again in a final non-partial
+						// event; skip it to avoid sending duplicate content to the client.
 					} else if isPartial {
 						emit("token", map[string]string{"text": p.Text})
 						assistantBuf.WriteString(p.Text)

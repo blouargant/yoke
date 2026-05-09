@@ -9,16 +9,23 @@ import (
 
 // SessionRegistry maps session display names (petnames or user-assigned titles)
 // to their leader mailbox addresses, enabling cross-session communication.
-// It is file-backed so that multiple processes sharing the same .mailboxes/
-// directory can discover each other.
+// The registry is file-backed for persistence across restarts; an in-memory
+// cache serves reads without hitting the filesystem on every lookup.
 type SessionRegistry struct {
-	path string
-	mu   sync.RWMutex
+	path  string
+	mu    sync.RWMutex
+	cache map[string]string // nil until first load
 }
 
 // NewSessionRegistry creates a registry backed by sessions.json inside dir.
+// The file is read eagerly so subsequent Lookup calls are served from memory.
 func NewSessionRegistry(dir string) *SessionRegistry {
-	return &SessionRegistry{path: filepath.Join(dir, "sessions.json")}
+	r := &SessionRegistry{path: filepath.Join(dir, "sessions.json")}
+	// Warm the cache; ignore errors (missing file is fine on first run).
+	r.mu.Lock()
+	r.cache, _ = r.load()
+	r.mu.Unlock()
+	return r
 }
 
 // Register adds or updates an entry: name → mailbox address.
@@ -78,9 +85,12 @@ func (r *SessionRegistry) List() map[string]string {
 	return out
 }
 
-// load reads the registry file. Returns an empty map when the file does not
-// exist. Must be called with r.mu held.
+// load returns the in-memory cache if populated, otherwise reads the file.
+// Must be called with r.mu held.
 func (r *SessionRegistry) load() (map[string]string, error) {
+	if r.cache != nil {
+		return r.cache, nil
+	}
 	data, err := os.ReadFile(r.path)
 	if os.IsNotExist(err) {
 		return make(map[string]string), nil
@@ -95,7 +105,8 @@ func (r *SessionRegistry) load() (map[string]string, error) {
 	return m, nil
 }
 
-// save writes the registry to disk. Must be called with r.mu held.
+// save writes the registry to disk and updates the in-memory cache.
+// Must be called with r.mu held.
 func (r *SessionRegistry) save(m map[string]string) error {
 	if err := os.MkdirAll(filepath.Dir(r.path), 0o755); err != nil {
 		return err
@@ -104,5 +115,9 @@ func (r *SessionRegistry) save(m map[string]string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(r.path, data, 0o644)
+	if err := os.WriteFile(r.path, data, 0o644); err != nil {
+		return err
+	}
+	r.cache = m
+	return nil
 }

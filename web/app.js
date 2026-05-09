@@ -16,6 +16,7 @@ const els = {
   composerWrap:  document.getElementById("composer-wrap"),
   composer:      document.getElementById("composer"),
   prompt:        document.getElementById("prompt"),
+  editModeBtn:   document.getElementById("edit-mode-btn"),
   slashBtn:      document.getElementById("slash-btn"),
   slashMenu:     document.getElementById("slash-menu"),
   send:          document.getElementById("send"),
@@ -25,6 +26,7 @@ const els = {
 
 let token = localStorage.getItem(TOKEN_KEY) || "";
 let activeSessionId = null;
+let sendOnEnter = true;
 
 // ─── Per-session streaming state ─────────────────────────────────────────────
 // Tracks which sessions are actively streaming so switching sessions doesn't
@@ -181,6 +183,11 @@ function formatSkillsList(xml) {
 }
 
 // ─── Markdown ────────────────────────────────────────────────────────────────
+
+// Escape raw HTML blocks so agent output cannot inject scripts via markdown.
+if (typeof marked !== "undefined") {
+  marked.use({ renderer: { html(token) { return escHtml(token.raw); } } });
+}
 
 function renderMarkdown(el, text) {
   if (typeof marked === "undefined") {
@@ -1083,6 +1090,21 @@ els.cancel.addEventListener("click", () => {
   const ctrl = sessionAbortCtrls.get(activeSessionId);
   if (ctrl) ctrl.abort();
 });
+function updateEditModeBtn() {
+  els.editModeBtn.classList.toggle("active", !sendOnEnter);
+  els.editModeBtn.title = sendOnEnter
+    ? "Edit mode: switch to Enter=new line, Ctrl+Enter=send"
+    : "Send mode: switch to Enter=send, Ctrl+Enter=new line";
+  els.prompt.placeholder = sendOnEnter
+    ? "Message the agent… (Enter to send)"
+    : "Message the agent… (Ctrl+Enter to send)";
+}
+
+els.editModeBtn.addEventListener("click", () => {
+  sendOnEnter = !sendOnEnter;
+  updateEditModeBtn();
+});
+
 els.prompt.addEventListener("keydown", (e) => {
   if (!els.slashMenu.hasAttribute("hidden")) {
     const items = Array.from(els.slashMenu.querySelectorAll(".slash-menu-item"));
@@ -1118,9 +1140,25 @@ els.prompt.addEventListener("keydown", (e) => {
       return;
     }
   }
-  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-    e.preventDefault();
-    sendMessage();
+  if (sendOnEnter) {
+    if (e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      const start = els.prompt.selectionStart;
+      const end = els.prompt.selectionEnd;
+      els.prompt.value = els.prompt.value.substring(0, start) + "\n" + els.prompt.value.substring(end);
+      els.prompt.selectionStart = els.prompt.selectionEnd = start + 1;
+      els.prompt.dispatchEvent(new Event("input"));
+    }
+  } else {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      sendMessage();
+    }
   }
 });
 

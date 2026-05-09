@@ -59,15 +59,21 @@ func run() error {
 
 	debug, _ := strconv.ParseBool(os.Getenv("GOAGENT_DEBUG"))
 
-	log.Printf("server: building lead agent...")
-	result, err := agent.NewAgent(rootCtx, agent.Options{
+	agentOpts := agent.Options{
 		ConfigPath:       os.Getenv("GOAGENT_CONFIG_PATH"),
 		ConfigPathStrict: os.Getenv("GOAGENT_CONFIG_PATH") != "",
 		SkillsDir:        os.Getenv("GOAGENT_SKILLS_DIR"),
 		SoftSkillsDir:    os.Getenv("GOAGENT_SOFTSKILLS_DIR"),
 		AppName:          envOr("GOAGENT_APP_NAME", "agent-toolkit-server"),
 		DebugLogging:     debug,
-	})
+	}
+
+	// Resolve the YAML files exposed by the web UI editor up-front so the
+	// HTTP handlers never derive paths from URL parameters.
+	cfgFiles := resolveConfigFiles(agentOpts)
+
+	log.Printf("server: building lead agent...")
+	result, err := agent.NewAgent(rootCtx, agentOpts)
 	if err != nil {
 		return fmt.Errorf("build agent: %w", err)
 	}
@@ -100,6 +106,11 @@ func run() error {
 		}, meta.ID, meta.UserID)
 	}
 
+	// The restart coordinator is created up-front with a nil shutdown
+	// callback so it can be wired into the engine; the actual shutdown
+	// hook is installed after the *http.Server exists below.
+	restart := newRestartCoordinator(nil)
+
 	engine := newEngine(serverDeps{
 		Token:           token,
 		Runner:          r,
@@ -115,6 +126,8 @@ func run() error {
 		PushMgr:         pushMgr,
 		PushEvents:      pushEvents,
 		rootCtx:         rootCtx,
+		ConfigFiles:     cfgFiles,
+		Restart:         restart,
 	})
 
 	srv := &http.Server{
@@ -123,6 +136,11 @@ func run() error {
 		ReadHeaderTimeout: 10 * time.Second,
 		// No WriteTimeout: SSE responses are long-lived.
 	}
+	restart.setShutdown(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	})
 
 	errCh := make(chan error, 1)
 	go func() {
