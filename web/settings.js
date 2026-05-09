@@ -131,9 +131,11 @@
       </header>
       <div class="settings-body">
         <div class="settings-body-toolbar">
-          <div class="settings-view-toggle" role="tablist">
-            <button type="button" data-view="form" class="active">Form</button>
-            <button type="button" data-view="raw">Raw YAML</button>
+          <div class="settings-content-inner">
+            <div class="settings-view-toggle" role="tablist">
+              <button type="button" data-view="form" class="active">Form</button>
+              <button type="button" data-view="raw">Raw YAML</button>
+            </div>
           </div>
         </div>
         <div class="settings-body-content"></div>
@@ -422,17 +424,24 @@
     const el = bodyEl.querySelector("#agent-agents");
     el.innerHTML = "";
     if (!d.agents.length) { el.innerHTML = `<p class="empty">No agents defined.</p>`; return; }
-    const modelOptions = ["", ...Object.keys(d.models || {})];
+    const modelOptions = Object.keys(d.models || {});
+    const leaderIsFirst = d.agents[0]?.name === "leader";
+
     d.agents.forEach((a, idx) => {
+      const isLeader = a.name === "leader";
+      // Leader is pinned at top; no agent may move above it.
+      const upDisabled   = idx === 0 || (leaderIsFirst && idx === 1);
+      const downDisabled = idx === d.agents.length - 1 || isLeader;
+
       const row = document.createElement("div");
       row.className = "form-card";
       row.innerHTML = `
         <div class="form-card-header">
           <strong>${escHtml(a.name || "(unnamed)")}</strong>
           <span class="card-actions">
-            <button type="button" class="up-btn" title="Move up" ${idx === 0 ? "disabled" : ""}>↑</button>
-            <button type="button" class="down-btn" title="Move down" ${idx === d.agents.length - 1 ? "disabled" : ""}>↓</button>
-            <button type="button" class="del-btn">Remove</button>
+            ${isLeader ? "" : `<button type="button" class="up-btn" title="Move up" ${upDisabled ? "disabled" : ""}>▲</button>`}
+            ${isLeader ? "" : `<button type="button" class="down-btn" title="Move down" ${downDisabled ? "disabled" : ""}>▼</button>`}
+            ${isLeader ? "" : `<button type="button" class="del-btn">Remove</button>`}
           </span>
         </div>
         <div class="form-grid"></div>
@@ -443,35 +452,58 @@
       `;
       const grid = row.querySelector(".form-grid");
       const onChange = () => markFormDirty("agent");
-      grid.appendChild(field("name", a.name, "string", v => { a.name = v; renderAgentAgents(d); }));
+
+      const nameRow = field("name", a.name, "string", v => { a.name = v; renderAgentAgents(d); });
+      if (isLeader) nameRow.querySelector("input").disabled = true;
+      grid.appendChild(nameRow);
       grid.appendChild(selectField("model_ref", a.model_ref || "", modelOptions, v => { a.model_ref = v; onChange(); }));
-      grid.appendChild(field("enabled", a.enabled, "bool", v => { a.enabled = v; onChange(); }));
-      grid.appendChild(field("mailbox", a.mailbox, "bool", v => { a.mailbox = v; onChange(); }));
-      grid.appendChild(toolsField("tools", a.tools, v => { a.tools = v; onChange(); }));
-      grid.appendChild(field("skills_dir", a.skills_dir, "string", v => { a.skills_dir = v; onChange(); }));
-      grid.appendChild(field("softskills_dir", a.softskills_dir, "string", v => { a.softskills_dir = v; onChange(); }));
+
+      // Leader is always enabled — show the checkbox but lock it.
+      const enabledRow = field("enabled", isLeader ? true : a.enabled, "bool", v => { a.enabled = v; onChange(); });
+      if (isLeader) enabledRow.querySelector("input").disabled = true;
+      grid.appendChild(enabledRow);
+
+      // Mailbox defaults to true for leader when not explicitly set.
+      grid.appendChild(field("mailbox", (isLeader && a.mailbox == null) ? true : a.mailbox, "bool", v => { a.mailbox = v; onChange(); }));
+
+      // Tools default to all available for leader when not explicitly set.
+      const effectiveTools = (isLeader && (!a.tools || !a.tools.length)) ? [...TOOL_GROUPS] : a.tools;
+      grid.appendChild(toolsField("tools", effectiveTools, v => { a.tools = v; onChange(); }));
+
+      // skills_dir / softskills_dir show "(default)" placeholder for leader when absent.
+      const skillsRow = field("skills_dir", a.skills_dir, "string", v => { a.skills_dir = v; onChange(); });
+      if (isLeader && !a.skills_dir) skillsRow.querySelector("input").placeholder = "(default)";
+      grid.appendChild(skillsRow);
+
+      const softskillsRow = field("softskills_dir", a.softskills_dir, "string", v => { a.softskills_dir = v; onChange(); });
+      if (isLeader && !a.softskills_dir) softskillsRow.querySelector("input").placeholder = "(default)";
+      grid.appendChild(softskillsRow);
+
       grid.appendChild(field("mcp_config_path", a.mcp_config_path, "string", v => { a.mcp_config_path = v; onChange(); }));
       grid.appendChild(field("permissions_config_path", a.permissions_config_path, "string", v => { a.permissions_config_path = v; onChange(); }));
       grid.appendChild(field("description", a.description, "string", v => { a.description = v; onChange(); }));
+
       const ta = row.querySelector("textarea");
       ta.value = a.instruction || "";
       ta.addEventListener("input", () => { a.instruction = ta.value; onChange(); });
 
-      row.querySelector(".up-btn").addEventListener("click", () => {
-        if (idx === 0) return;
+      row.querySelector(".up-btn")?.addEventListener("click", () => {
+        if (upDisabled) return;
         [d.agents[idx - 1], d.agents[idx]] = [d.agents[idx], d.agents[idx - 1]];
         markFormDirty("agent"); renderAgentAgents(d);
       });
-      row.querySelector(".down-btn").addEventListener("click", () => {
-        if (idx === d.agents.length - 1) return;
+      row.querySelector(".down-btn")?.addEventListener("click", () => {
+        if (downDisabled) return;
         [d.agents[idx + 1], d.agents[idx]] = [d.agents[idx], d.agents[idx + 1]];
         markFormDirty("agent"); renderAgentAgents(d);
       });
-      row.querySelector(".del-btn").addEventListener("click", () => {
-        if (!confirm(`Remove agent "${a.name}"?`)) return;
-        d.agents.splice(idx, 1);
-        markFormDirty("agent"); renderAgentAgents(d);
-      });
+      if (!isLeader) {
+        row.querySelector(".del-btn").addEventListener("click", () => {
+          if (!confirm(`Remove agent "${a.name}"?`)) return;
+          d.agents.splice(idx, 1);
+          markFormDirty("agent"); renderAgentAgents(d);
+        });
+      }
       el.appendChild(row);
     });
   }

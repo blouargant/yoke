@@ -186,7 +186,23 @@
 .raw-editor:focus { outline: 1px solid #0e639c; border-color: #0e639c; }
 
 /* Forms */
-.settings-form { display: flex; flex-direction: column; gap: 1.5rem; }
+.settings-content-inner { max-width: 1400px; margin: 0 auto; width: 100%; }
+
+.settings-form { display: flex; flex-direction: column; gap: 1.5rem; max-width: 1400px; margin: 0 auto; width: 100%; }
+
+.up-btn, .down-btn {
+  background: transparent;
+  border: none;
+  color: #ffffff;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.2rem 0.35rem;
+  border-radius: 3px;
+}
+.up-btn:hover, .down-btn:hover { background: rgba(255,255,255,0.1); }
+.up-btn:disabled, .down-btn:disabled { color: #555; cursor: default; }
+.up-btn:disabled:hover, .down-btn:disabled:hover { background: transparent; }
 
 /* Sub-tabs (e.g. Globals / Models / Agents inside the Agent tab). */
 .settings-subtabs {
@@ -247,7 +263,7 @@
 
 .form-row {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: minmax(220px, max-content) 1fr;
   align-items: center;
   gap: 0.75rem;
   font-size: 0.85rem;
@@ -255,6 +271,7 @@
 .form-row > span {
   color: #858585;
   font-weight: 500;
+  word-break: break-word;
 }
 .form-row input[type="text"],
 .form-row input[type="number"],
@@ -291,7 +308,7 @@
 }
 
 .form-row-tools {
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: minmax(220px, max-content) 1fr;
 }
 .tools-checks { display: flex; gap: 0.75rem; flex-wrap: wrap; }
 .tools-check  { font-weight: normal; color: #cccccc; }
