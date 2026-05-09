@@ -91,7 +91,7 @@ Sub-agents are wrapped via `agenttool.New()` and exposed as **tools** on the lea
 
 `defaults → config/agent.yaml → ENV → Options (struct/flags)`
 
-`api_key` values in YAML are resolved as environment variable names first (if an env var with that name exists and is non-empty, its value is used).
+`api_key` and `base_url` values in YAML are resolved as environment variable names first (if an env var with that name exists and is non-empty, its value is used).
 
 ### Environment variables
 

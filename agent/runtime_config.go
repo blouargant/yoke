@@ -197,7 +197,7 @@ func normalizeModelCatalog(models map[string]ModelEntry) map[string]RuntimeModel
 			Name:                              name,
 			Provider:                          strings.TrimSpace(m.Provider),
 			Model:                             strings.TrimSpace(m.Model),
-			BaseURL:                           strings.TrimSpace(m.BaseURL),
+			BaseURL:                           resolveBaseURLReference(strings.TrimSpace(m.BaseURL)),
 			APIKey:                            resolveAPIKeyReference(strings.TrimSpace(m.APIKey)),
 			ContextLength:                     m.ContextLength,
 			InputTokenPricePerMillion:         m.InputTokenPricePerMillion,
@@ -242,7 +242,7 @@ func resolveAgentEntries(entries []AgentEntry, modelCatalog map[string]RuntimeMo
 			ModelRef:                          modelRef,
 			Provider:                          firstNonEmpty(strings.TrimSpace(e.Provider), refModel.Provider),
 			Model:                             firstNonEmpty(strings.TrimSpace(e.Model), refModel.Model),
-			BaseURL:                           firstNonEmpty(strings.TrimSpace(e.BaseURL), refModel.BaseURL),
+			BaseURL:                           resolveBaseURLReference(firstNonEmpty(strings.TrimSpace(e.BaseURL), refModel.BaseURL)),
 			APIKey:                            resolveAPIKeyReference(firstNonEmpty(strings.TrimSpace(e.APIKey), refModel.APIKey)),
 			ContextLength:                     refModel.ContextLength,
 			InputTokenPricePerMillion:         refModel.InputTokenPricePerMillion,
@@ -381,7 +381,7 @@ func normalizedAgentConfig(in RuntimeAgentConfig) RuntimeAgentConfig {
 		ModelRef:                          strings.ToLower(strings.TrimSpace(in.ModelRef)),
 		Provider:                          strings.TrimSpace(in.Provider),
 		Model:                             strings.TrimSpace(in.Model),
-		BaseURL:                           strings.TrimSpace(in.BaseURL),
+		BaseURL:                           resolveBaseURLReference(strings.TrimSpace(in.BaseURL)),
 		APIKey:                            resolveAPIKeyReference(strings.TrimSpace(in.APIKey)),
 		ContextLength:                     in.ContextLength,
 		InputTokenPricePerMillion:         in.InputTokenPricePerMillion,
@@ -507,6 +507,16 @@ func ResolveRuntimeSettings(opts Options) (RuntimeSettings, error) {
 // environment variable name. If an env var with that exact name exists and is
 // non-empty, the env value is used.
 func resolveAPIKeyReference(v string) string {
+	if v == "" {
+		return ""
+	}
+	if resolved := os.Getenv(v); resolved != "" {
+		return resolved
+	}
+	return v
+}
+
+func resolveBaseURLReference(v string) string {
 	if v == "" {
 		return ""
 	}

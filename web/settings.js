@@ -13,9 +13,16 @@
   const BANNER_DISMISS_FLAG = "agent_toolkit_restart_dismissed";
   const TOOL_GROUPS = ["fs", "mcp", "skills", "softskills"];
 
+  const AGENT_SUBTABS = [
+    { id: "globals", label: "Globals" },
+    { id: "models",  label: "Models"  },
+    { id: "agents",  label: "Agents"  },
+  ];
+
   const state = {
     activeFile: "agent",
     activeView: "form", // 'form' | 'raw'
+    activeAgentSubtab: "globals", // only used when activeFile === 'agent'
     raw: {}, // id → { content, mtime, dirty, value }
     parsed: {}, // id → { data, mtime, dirty, value }
     open: false,
@@ -121,12 +128,16 @@
           configuration until the server is restarted.
         </p>
         <div class="settings-tabs" role="tablist"></div>
-        <div class="settings-view-toggle" role="tablist">
-          <button type="button" data-view="form" class="active">Form</button>
-          <button type="button" data-view="raw">Raw YAML</button>
-        </div>
       </header>
-      <div class="settings-body"></div>
+      <div class="settings-body">
+        <div class="settings-body-toolbar">
+          <div class="settings-view-toggle" role="tablist">
+            <button type="button" data-view="form" class="active">Form</button>
+            <button type="button" data-view="raw">Raw YAML</button>
+          </div>
+        </div>
+        <div class="settings-body-content"></div>
+      </div>
       <footer class="settings-footer">
         <span class="settings-status"></span>
         <button type="button" class="btn-discard">Discard</button>
@@ -138,7 +149,7 @@
 
     tabsEl = panelEl.querySelector(".settings-tabs");
     viewToggleEl = panelEl.querySelector(".settings-view-toggle");
-    bodyEl = panelEl.querySelector(".settings-body");
+    bodyEl = panelEl.querySelector(".settings-body-content");
     footerEl = panelEl.querySelector(".settings-footer");
     statusEl = panelEl.querySelector(".settings-status");
 
@@ -290,41 +301,66 @@
     if (!d.models || typeof d.models !== "object") d.models = {};
     if (!Array.isArray(d.agents)) d.agents = [];
 
+    const sub = state.activeAgentSubtab;
     bodyEl.innerHTML = `
       <div class="settings-form">
+        <div class="settings-subtabs" role="tablist">
+          ${AGENT_SUBTABS.map(t => `
+            <button type="button" data-subtab="${t.id}" class="${sub === t.id ? "active" : ""}">${escHtml(t.label)}</button>
+          `).join("")}
+        </div>
+        <div class="settings-subtab-body"></div>
+      </div>
+    `;
+
+    bodyEl.querySelectorAll(".settings-subtabs button").forEach(b => {
+      b.addEventListener("click", () => {
+        if (state.activeAgentSubtab === b.dataset.subtab) return;
+        state.activeAgentSubtab = b.dataset.subtab;
+        renderAgentForm();
+      });
+    });
+
+    const host = bodyEl.querySelector(".settings-subtab-body");
+    if (sub === "globals") {
+      host.innerHTML = `
         <section class="form-section">
           <h3>Globals</h3>
           <div class="form-grid" id="agent-globals"></div>
         </section>
+      `;
+      renderAgentGlobals(d);
+    } else if (sub === "models") {
+      host.innerHTML = `
         <section class="form-section">
           <h3>Models <button type="button" class="add-btn" id="add-model">+ Add model</button></h3>
           <div id="agent-models"></div>
         </section>
+      `;
+      bodyEl.querySelector("#add-model").addEventListener("click", () => {
+        let name = prompt("New model name:");
+        if (!name) return;
+        name = name.trim().toLowerCase();
+        if (!name || d.models[name]) return;
+        d.models[name] = { provider: "", model: "", base_url: "", api_key: "" };
+        markFormDirty(id);
+        renderAgentModels(d);
+      });
+      renderAgentModels(d);
+    } else {
+      host.innerHTML = `
         <section class="form-section">
           <h3>Agents <button type="button" class="add-btn" id="add-agent">+ Add agent</button></h3>
           <div id="agent-agents"></div>
         </section>
-      </div>
-    `;
-
-    renderAgentGlobals(d);
-    renderAgentModels(d);
-    renderAgentAgents(d);
-
-    bodyEl.querySelector("#add-model").addEventListener("click", () => {
-      let name = prompt("New model name:");
-      if (!name) return;
-      name = name.trim().toLowerCase();
-      if (!name || d.models[name]) return;
-      d.models[name] = { provider: "", model: "", base_url: "", api_key: "" };
-      markFormDirty(id);
-      renderAgentModels(d);
-    });
-    bodyEl.querySelector("#add-agent").addEventListener("click", () => {
-      d.agents.push({ name: "new-agent", enabled: true, mailbox: false, tools: [] });
-      markFormDirty(id);
+      `;
+      bodyEl.querySelector("#add-agent").addEventListener("click", () => {
+        d.agents.push({ name: "new-agent", enabled: true, mailbox: false, tools: [] });
+        markFormDirty(id);
+        renderAgentAgents(d);
+      });
       renderAgentAgents(d);
-    });
+    }
     updateFooter();
   }
 
@@ -484,7 +520,7 @@
         </select>
         <input type="text" class="rule-pattern" placeholder="regex pattern" />
         <input type="text" class="rule-reason" placeholder="reason (optional)" />
-        <button type="button" class="del-btn">×</button>
+        <button type="button" class="del-btn">Remove</button>
       `;
       const kindSel = row.querySelector(".rule-kind");
       const patIn = row.querySelector(".rule-pattern");

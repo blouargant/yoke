@@ -16,7 +16,9 @@ models:
   hosted:
     provider: openai_compat
     model: test
-    base_url: https://llm-gateway.ai.chapsvision.com/llm-gateway
+    # base_url accepts either a literal URL or an environment variable name.
+    # If the value matches an existing env var name, its value is used.
+    base_url: OPENAI_BASE_URL
     # api_key accepts either a literal key or an environment variable name.
     # If the value matches an existing env var name, its value is used.
     api_key: OPENAI_API_KEY
@@ -29,7 +31,7 @@ models:
   simple:
     provider: openai_compat
     model: gpt-4o-mini-sweden
-    base_url: https://llm-gateway.ai.chapsvision.com/llm-gateway
+    base_url: OPENAI_BASE_URL
     api_key: OPENAI_API_KEY
     context_length: 128000
     input_token_price_per_million: 0.17
@@ -39,7 +41,7 @@ models:
   balanced:
     provider: openai_compat
     model: gpt-4.1-mini-sweden
-    base_url: https://llm-gateway.ai.chapsvision.com/llm-gateway
+    base_url: OPENAI_BASE_URL
     api_key: OPENAI_API_KEY
     context_length: 128000
     input_token_price_per_million: 0.42
@@ -49,7 +51,7 @@ models:
   premium:
     provider: openai_compat
     model: claude-sonnet-4-6
-    base_url: https://llm-gateway.ai.chapsvision.com/llm-gateway
+    base_url: OPENAI_BASE_URL
     api_key: OPENAI_API_KEY
     context_length: 200000
     input_token_price_per_million: 5

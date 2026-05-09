@@ -9,7 +9,6 @@ const els = {
   sidebarResize: document.getElementById("sidebar-resize"),
   sidebarToggle: document.getElementById("sidebar-toggle"),
   newChat:       document.getElementById("new-chat"),
-  setToken:      document.getElementById("set-token"),
   list:          document.getElementById("session-list"),
   promptHeader:  document.getElementById("prompt-header"),
   transcript:    document.getElementById("transcript"),
@@ -1084,7 +1083,6 @@ async function handleSlashCommand(raw) {
 
 els.transcript.addEventListener("scroll", updatePinnedForScroll);
 els.newChat.addEventListener("click", newChat);
-els.setToken.addEventListener("click", promptForToken);
 els.composer.addEventListener("submit", (e) => { e.preventDefault(); sendMessage(); });
 els.cancel.addEventListener("click", () => {
   const ctrl = sessionAbortCtrls.get(activeSessionId);

@@ -172,6 +172,63 @@ models:
 	}
 }
 
+func TestResolveRuntimeSettingsBaseURLFromEnv(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.yaml")
+	mustWrite(t, path, []byte(`
+agents:
+  - name: leader
+    model_ref: default
+    provider: openai_compat
+    model: test-model
+    base_url: BASE_URL_ENV
+models:
+  default:
+    provider: openai_compat
+    model: fallback
+`))
+	t.Setenv("BASE_URL_ENV", "https://resolved-base-url/v1")
+
+	runtime, err := ResolveRuntimeSettings(Options{ConfigPath: path, ConfigPathStrict: true})
+	if err != nil {
+		t.Fatalf("ResolveRuntimeSettings() error = %v", err)
+	}
+	leader, ok := runtime.AgentConfig("leader")
+	if !ok {
+		t.Fatal("leader config missing")
+	}
+	if got := leader.BaseURL; got != "https://resolved-base-url/v1" {
+		t.Fatalf("leader.BaseURL = %q, want https://resolved-base-url/v1", got)
+	}
+}
+
+func TestResolveRuntimeSettingsBaseURLLiteralWhenEnvMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.yaml")
+	mustWrite(t, path, []byte(`
+agents:
+  - name: leader
+    model_ref: default
+    provider: openai_compat
+    model: test-model
+    base_url: https://literal-base-url/v1
+models:
+  default:
+    provider: openai_compat
+    model: fallback
+`))
+
+	runtime, err := ResolveRuntimeSettings(Options{ConfigPath: path, ConfigPathStrict: true})
+	if err != nil {
+		t.Fatalf("ResolveRuntimeSettings() error = %v", err)
+	}
+	leader, ok := runtime.AgentConfig("leader")
+	if !ok {
+		t.Fatal("leader config missing")
+	}
+	if got := leader.BaseURL; got != "https://literal-base-url/v1" {
+		t.Fatalf("leader.BaseURL = %q, want https://literal-base-url/v1", got)
+	}
+}
+
 func TestResolveRuntimeSettingsUnknownModelRef(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.yaml")
 	mustWrite(t, path, []byte(`

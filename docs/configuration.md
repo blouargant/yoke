@@ -80,12 +80,12 @@ commands are filtered before the tool's normal truncation step.
 If a non-leader agent omits model connection fields, they inherit from
 the leader.
 
-For `api_key`, the value can be either:
+For `base_url` and `api_key`, the values can be either:
 
-- the key itself (literal), or
+- the value itself (literal), or
 - an environment variable name.
 
-When loading YAML, if `api_key` matches an existing env var name, the
+When loading YAML, if `base_url` or `api_key` matches an existing env var name, the
 env var value is used.
 
 ### CLI and env overrides
