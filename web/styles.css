@@ -565,22 +565,45 @@ body.resizing #sidebar-resize { transition: none; }
 /* ─── Composer ─────────────────────────────────────────────── */
 #composer-wrap {
   flex-shrink: 0;
-  border-top: 1px solid #3e3e42;
   background: #252526;
-  padding: 12px 0;
+  padding: 0 0 12px 0;
   position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: var(--composer-h, auto);
 }
+
+#composer-resize {
+  height: 10px;
+  flex-shrink: 0;
+  cursor: ns-resize;
+  background: linear-gradient(to bottom, transparent 40%, #3e3e42 40%, #3e3e42 60%, transparent 60%);
+  transition: background 0.15s;
+}
+#composer-resize:hover,
+#composer-resize.is-dragging {
+  background: linear-gradient(to bottom, transparent 40%, #007acc 40%, #007acc 60%, transparent 60%);
+}
+body.resizing-composer { cursor: ns-resize; }
+body.resizing-composer #composer-resize { transition: none; }
+
 #composer {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
   max-width: var(--col-w);
   margin: 0 auto;
   padding: 0 20px;
+  width: 100%;
 }
 
 #prompt {
   width: 100%;
+  flex: 1;
+  min-height: calc(1.5em + 20px);
   background: #1e1e1e;
   border: 1px solid #3e3e42;
   color: #cccccc;
@@ -591,6 +614,7 @@ body.resizing #sidebar-resize { transition: none; }
   resize: none;
   outline: none;
   line-height: 1.5;
+  overflow-y: auto;
   transition: border-color 0.15s;
 }
 #prompt:focus { border-color: #007acc; }

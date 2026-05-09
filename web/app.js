@@ -30,6 +30,7 @@ const els = {
   ctxPopPct:      document.getElementById("ctx-pop-pct"),
   ctxPopBudget:   document.getElementById("ctx-pop-budget"),
   ctxCompactBtn:  document.getElementById("ctx-compact-btn"),
+  composerResize: document.getElementById("composer-resize"),
 };
 
 let token = localStorage.getItem(TOKEN_KEY) || "";
@@ -1322,6 +1323,31 @@ document.addEventListener("mousedown", (e) => {
   }
 });
 
+// ─── Composer resize ─────────────────────────────────────────────────────────
+
+const COMPOSER_MIN_H = 116;
+const COMPOSER_H_KEY = "agent_toolkit_composer_h";
+
+let composerDragging  = false;
+let composerDragStartY = 0;
+let composerDragStartH = 0;
+
+function setComposerHeight(h) {
+  const clamped = Math.max(COMPOSER_MIN_H, h);
+  document.documentElement.style.setProperty("--composer-h", clamped + "px");
+  localStorage.setItem(COMPOSER_H_KEY, clamped + "px");
+}
+
+els.composerResize.addEventListener("mousedown", (e) => {
+  composerDragging   = true;
+  composerDragStartY = e.clientY;
+  composerDragStartH = els.composerWrap.getBoundingClientRect().height;
+  els.composerResize.classList.add("is-dragging");
+  document.body.classList.add("resizing-composer");
+  document.body.style.userSelect = "none";
+  e.preventDefault();
+});
+
 // ─── Sidebar resize & toggle ─────────────────────────────────────────────────
 
 const SIDEBAR_MIN_W   = 140;
@@ -1359,17 +1385,29 @@ els.sidebarResize.addEventListener("mousedown", (e) => {
 });
 
 document.addEventListener("mousemove", (e) => {
-  if (!sidebarDragging) return;
-  const w = Math.min(SIDEBAR_MAX_W, Math.max(SIDEBAR_MIN_W, e.clientX));
-  setSidebarWidth(w);
+  if (composerDragging) {
+    const newH = composerDragStartH + (composerDragStartY - e.clientY);
+    setComposerHeight(newH);
+  }
+  if (sidebarDragging) {
+    const w = Math.min(SIDEBAR_MAX_W, Math.max(SIDEBAR_MIN_W, e.clientX));
+    setSidebarWidth(w);
+  }
 });
 
 document.addEventListener("mouseup", () => {
-  if (!sidebarDragging) return;
-  sidebarDragging = false;
-  els.sidebarResize.classList.remove("is-dragging");
-  document.body.classList.remove("resizing");
-  document.body.style.userSelect = "";
+  if (composerDragging) {
+    composerDragging = false;
+    els.composerResize.classList.remove("is-dragging");
+    document.body.classList.remove("resizing-composer");
+    document.body.style.userSelect = "";
+  }
+  if (sidebarDragging) {
+    sidebarDragging = false;
+    els.sidebarResize.classList.remove("is-dragging");
+    document.body.classList.remove("resizing");
+    document.body.style.userSelect = "";
+  }
 });
 
 els.sidebarToggle.addEventListener("click", () => {
@@ -1422,6 +1460,8 @@ els.ctxCompactBtn.addEventListener("click", async (e) => {
   }
   const savedW = localStorage.getItem(SIDEBAR_W_KEY);
   if (savedW) document.documentElement.style.setProperty("--sidebar-w", savedW);
+  const savedComposerH = localStorage.getItem(COMPOSER_H_KEY);
+  if (savedComposerH) document.documentElement.style.setProperty("--composer-h", savedComposerH);
   if (localStorage.getItem(SIDEBAR_COL_KEY) === "1") els.sidebar.classList.add("collapsed");
   if (!token) promptForToken();
   await loadSessions();
