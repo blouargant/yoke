@@ -74,6 +74,7 @@ func run() error {
 	// Resolve the YAML files exposed by the web UI editor up-front so the
 	// HTTP handlers never derive paths from URL parameters.
 	cfgFiles := resolveConfigFiles(agentOpts)
+	skillDeps := resolveSkillsDeps(cfgFiles)
 
 	log.Printf("server: building lead agent...")
 	result, err := agent.NewAgent(rootCtx, agentOpts)
@@ -147,6 +148,7 @@ func run() error {
 		PushEvents:      pushEvents,
 		rootCtx:         rootCtx,
 		ConfigFiles:     cfgFiles,
+		SkillsDeps:      skillDeps,
 		Restart:         restart,
 	})
 

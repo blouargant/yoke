@@ -58,6 +58,8 @@ type serverDeps struct {
 	// ConfigFiles holds the absolute paths of the YAML files editable from
 	// the web UI (resolved once at startup; never derived from URLs).
 	ConfigFiles configFiles
+	// SkillsDeps holds the registry and config paths for skills management.
+	SkillsDeps skillsDeps
 	// Restart triggers an in-place self re-exec of the server process.
 	Restart *restartCoordinator
 }
@@ -364,6 +366,7 @@ func newEngine(d serverDeps) *gin.Engine {
 	registerConfigRoutes(auth, d.ConfigFiles, d.Restart)
 	registerPreferencesRoutes(auth, newPreferencesStore(d.ConfigFiles))
 	registerProviderModelsRoute(auth)
+	registerSkillsRoutes(auth.Group("/skills"), d.SkillsDeps)
 
 	auth.POST("/sessions/:id/curate", func(c *gin.Context) {
 		id := c.Param("id")

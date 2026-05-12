@@ -8,6 +8,7 @@
     agent: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/></svg>`,
     permissions: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
     mcp: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
+    skills: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>`,
     appearance: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18c1.5 0 2-1 2-2 0-1.5 1-2 2-2h2a3 3 0 0 0 3-3 9 9 0 0 0-9-9z"/><circle cx="7.5" cy="10.5" r="1"/><circle cx="12" cy="7.5" r="1"/><circle cx="16.5" cy="10.5" r="1"/></svg>`,
     raw: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>`,
   };
@@ -29,6 +30,7 @@
   const MENU_ITEMS = [
     { id: "agent",         label: "Agent",       title: "Agent Configuration",       kind: "yaml" },
     { id: "permissions",   label: "Permissions", title: "Permissions",               kind: "yaml" },
+    { id: "skills",        label: "Skills",      title: "Skills",                    kind: "client" },
     { id: "mcp",           label: "MCP",         title: "MCP Servers",               kind: "yaml" },
     { id: APPEARANCE_ID,   label: "Appearance",  title: "Appearance",                kind: "client" },
   ];
@@ -110,6 +112,7 @@
     raw: {}, // id → { content, mtime, dirty, value }
     parsed: {}, // id → { data, mtime, dirty, value }
     open: false,
+    skills: { activeSubtab: "registry", editing: null }, // skills panel state
   };
 
   // ─── DOM refs ──────────────────────────────────────────────────────────
@@ -363,7 +366,7 @@
 
   // True for menu entries with no server-side YAML — these hide the
   // Form/Raw toggle and the Save/Discard footer.
-  function isClientOnly(id) { return id === APPEARANCE_ID; }
+  function isClientOnly(id) { return id === APPEARANCE_ID || id === "skills"; }
 
   function applyClientOnlyChrome() {
     const clientOnly = isClientOnly(state.activeFile);
@@ -408,6 +411,7 @@
     const id = state.activeFile;
     if (isClientOnly(id)) {
       if (id === APPEARANCE_ID) renderAppearance();
+      else if (id === "skills") renderSkills();
       return;
     }
     try {
@@ -840,6 +844,17 @@
       ta.value = a.instruction || "";
       ta.addEventListener("input", () => { a.instruction = ta.value; onChange(); });
 
+      // Skills block — async, populates after card renders.
+      if (a.skills_dir !== undefined) {
+        const skillsSection = document.createElement("div");
+        skillsSection.className = "skills-agent-section";
+        skillsSection.innerHTML = `<div class="skills-agent-section-label">Skills</div>`;
+        const skillsBody = document.createElement("div");
+        skillsSection.appendChild(skillsBody);
+        row.appendChild(skillsSection);
+        populateAgentSkillBlock(skillsBody, a.name);
+      }
+
       row.querySelector(".up-btn")?.addEventListener("click", () => {
         if (upDisabled) return;
         [d.agents[idx - 1], d.agents[idx]] = [d.agents[idx], d.agents[idx - 1]];
@@ -1188,6 +1203,484 @@
     }
     row.appendChild(wrap);
     return row;
+  }
+
+  // ─── Skills API helpers ────────────────────────────────────────────────
+
+  class SkillsAPIError extends Error {
+    constructor(code, msg, details) {
+      super(msg);
+      this.code = code;
+      this.details = details;
+    }
+  }
+
+  async function skillsAPI(method, path, body) {
+    const opts = { method, headers: authHeaders(body != null ? { "Content-Type": "application/json" } : {}) };
+    if (body != null) opts.body = JSON.stringify(body);
+    const r = await fetch(`/api${path}`, opts);
+    if (r.status === 204) return null;
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new SkillsAPIError(j.code || "HTTP_ERROR", j.error || `HTTP ${r.status}`, j.details);
+    return j;
+  }
+
+  const skillsGet    = path       => skillsAPI("GET",    path, null);
+  const skillsPost   = (path, b)  => skillsAPI("POST",   path, b);
+  const skillsPut    = (path, b)  => skillsAPI("PUT",    path, b);
+  const skillsDel    = path       => skillsAPI("DELETE", path, null);
+
+  // ─── Skills — shared block renderer ───────────────────────────────────
+
+  // Renders skill checkboxes + Enable all / Disable all into container.
+  // agentInfo: {name, skills_dir, has_skills_tool, linked:[], broken:[]}
+  // registry: [{name, description, ...}]
+  // onChanged: optional callback after a mutation
+  function renderSkillBlockContent(container, agentInfo, registry, onChanged) {
+    container.innerHTML = "";
+
+    if (!agentInfo.skills_dir) {
+      const p = document.createElement("p");
+      p.className = "settings-hint";
+      p.textContent = "No skills_dir configured — skills cannot be assigned. Set one in the fields above.";
+      container.appendChild(p);
+      return;
+    }
+
+    if (!agentInfo.has_skills_tool) {
+      const warn = document.createElement("p");
+      warn.className = "skills-tool-warning";
+      warn.textContent = '"skills" tool not enabled — assignments will be ignored until re-enabled in Agent → Agents.';
+      container.appendChild(warn);
+    }
+
+    if (agentInfo.broken && agentInfo.broken.length) {
+      const bwrap = document.createElement("div");
+      bwrap.className = "skills-broken-warning";
+      bwrap.innerHTML = `<span>Broken links: ${escHtml(agentInfo.broken.join(", "))}</span>`;
+      const fixBtn = document.createElement("button");
+      fixBtn.type = "button"; fixBtn.className = "del-btn"; fixBtn.textContent = "Remove broken";
+      fixBtn.addEventListener("click", async () => {
+        for (const n of agentInfo.broken) {
+          try { await skillsDel(`/skills/agents/${agentInfo.name}/skills/${n}`); } catch (_) {}
+        }
+        if (onChanged) onChanged();
+      });
+      bwrap.appendChild(fixBtn);
+      container.appendChild(bwrap);
+    }
+
+    const linked = new Set(agentInfo.linked || []);
+
+    if (!registry.length) {
+      const p = document.createElement("p"); p.className = "empty";
+      p.textContent = "No skills installed.";
+      container.appendChild(p);
+    } else {
+      const grid = document.createElement("div");
+      grid.className = "skills-check-grid";
+      for (const sk of registry) {
+        const label = document.createElement("label");
+        label.className = "skills-check-item";
+        label.dataset.skill = sk.name;
+        const cb = document.createElement("input");
+        cb.type = "checkbox"; cb.checked = linked.has(sk.name);
+        cb.addEventListener("change", async () => {
+          cb.disabled = true;
+          try {
+            if (cb.checked) {
+              await skillsPost(`/skills/agents/${agentInfo.name}/skills/${sk.name}`, null);
+              linked.add(sk.name);
+            } else {
+              await skillsDel(`/skills/agents/${agentInfo.name}/skills/${sk.name}`);
+              linked.delete(sk.name);
+            }
+          } catch (e) {
+            cb.checked = !cb.checked;
+            setStatus("Skills: " + e.message, "error");
+          } finally { cb.disabled = false; }
+        });
+        label.appendChild(cb);
+        const nameSpan = document.createElement("span");
+        nameSpan.className = "skills-check-name"; nameSpan.textContent = sk.name;
+        label.appendChild(nameSpan);
+        if (sk.description) {
+          const desc = document.createElement("span");
+          desc.className = "skills-check-desc"; desc.textContent = sk.description;
+          label.appendChild(desc);
+        }
+        grid.appendChild(label);
+      }
+      container.appendChild(grid);
+
+      const actions = document.createElement("div");
+      actions.className = "skills-block-actions";
+
+      const enableAllBtn = document.createElement("button");
+      enableAllBtn.type = "button"; enableAllBtn.className = "add-btn";
+      enableAllBtn.textContent = "Enable all";
+
+      const disableAllBtn = document.createElement("button");
+      disableAllBtn.type = "button"; disableAllBtn.className = "del-btn";
+      disableAllBtn.textContent = "Disable all";
+
+      enableAllBtn.addEventListener("click", async () => {
+        enableAllBtn.disabled = disableAllBtn.disabled = true;
+        try {
+          const res = await skillsPost(`/skills/agents/${agentInfo.name}/skills`, { action: "all" });
+          (res.linked || []).forEach(n => linked.add(n));
+          container.querySelectorAll(".skills-check-item input").forEach(cb => {
+            if (linked.has(cb.closest(".skills-check-item").dataset.skill)) cb.checked = true;
+          });
+        } catch (e) { setStatus("Skills: " + e.message, "error"); }
+        finally { enableAllBtn.disabled = disableAllBtn.disabled = false; }
+      });
+
+      disableAllBtn.addEventListener("click", async () => {
+        if (!await appConfirm(`Remove all skill links from "${agentInfo.name}"?`)) return;
+        enableAllBtn.disabled = disableAllBtn.disabled = true;
+        try {
+          await skillsPost(`/skills/agents/${agentInfo.name}/skills`, { action: "none" });
+          linked.clear();
+          container.querySelectorAll(".skills-check-item input").forEach(cb => { cb.checked = false; });
+        } catch (e) { setStatus("Skills: " + e.message, "error"); }
+        finally { enableAllBtn.disabled = disableAllBtn.disabled = false; }
+      });
+
+      actions.appendChild(enableAllBtn);
+      actions.appendChild(disableAllBtn);
+
+      const manageLink = document.createElement("button");
+      manageLink.type = "button"; manageLink.className = "skills-manage-link";
+      manageLink.textContent = "Manage in Skills →";
+      manageLink.addEventListener("click", () => {
+        state.skills.activeSubtab = "per-agent";
+        state.skills.editing = null;
+        setActiveFile("skills");
+      });
+      actions.appendChild(manageLink);
+      container.appendChild(actions);
+    }
+  }
+
+  // Populates a container with the agent's skill block (fetches data async).
+  async function populateAgentSkillBlock(container, agentName) {
+    container.innerHTML = `<p class="settings-hint">Loading skills…</p>`;
+    try {
+      const [regRes, agtsRes] = await Promise.all([
+        skillsGet("/skills/registry"),
+        skillsGet("/skills/agents"),
+      ]);
+      const registry = regRes.skills || [];
+      const agentInfo = (agtsRes.agents || []).find(a => a.name === agentName);
+      if (!agentInfo) { container.innerHTML = ""; return; }
+      const refresh = async () => {
+        try {
+          const fresh = await skillsGet("/skills/agents");
+          const fa = (fresh.agents || []).find(a => a.name === agentName);
+          if (fa) renderSkillBlockContent(container, fa, registry, refresh);
+        } catch (_) {}
+      };
+      renderSkillBlockContent(container, agentInfo, registry, refresh);
+    } catch (e) {
+      container.innerHTML = `<p class="settings-error">Skills unavailable: ${escHtml(e.message)}</p>`;
+    }
+  }
+
+  // ─── Skills — main panel renderer ─────────────────────────────────────
+
+  async function renderSkills() {
+    bodyEl.innerHTML = `<p class="settings-loading">Loading…</p>`;
+    applyClientOnlyChrome();
+
+    if (state.skills.editing) {
+      await renderSkillDetailView();
+      return;
+    }
+
+    const sub = state.skills.activeSubtab;
+    bodyEl.innerHTML = `
+      <div class="settings-form">
+        <div class="settings-subtabs" role="tablist">
+          <button type="button" data-subtab="registry" class="${sub === "registry" ? "active" : ""}">Registry</button>
+          <button type="button" data-subtab="per-agent" class="${sub === "per-agent" ? "active" : ""}">Per-agent</button>
+        </div>
+        <div class="skills-subtab-body"></div>
+      </div>
+    `;
+    bodyEl.querySelectorAll(".settings-subtabs button").forEach(b => {
+      b.addEventListener("click", () => {
+        if (state.skills.activeSubtab === b.dataset.subtab) return;
+        state.skills.activeSubtab = b.dataset.subtab;
+        renderSkills();
+      });
+    });
+    const host = bodyEl.querySelector(".skills-subtab-body");
+    if (sub === "registry") await renderSkillsRegistryTab(host);
+    else await renderSkillsPerAgentTab(host);
+  }
+
+  async function renderSkillsRegistryTab(host) {
+    host.innerHTML = `<p class="settings-loading">Loading registry…</p>`;
+    let skills;
+    try {
+      const res = await skillsGet("/skills/registry");
+      skills = res.skills || [];
+    } catch (e) {
+      host.innerHTML = `<p class="settings-error">${escHtml(e.message)}</p>`;
+      return;
+    }
+
+    host.innerHTML = `
+      <section class="form-section">
+        <h3>Installed skills
+          <button type="button" class="add-btn" id="skill-new">+ New</button>
+          <label class="add-btn skill-upload-label" id="skill-upload-label" style="cursor:pointer">
+            ↑ Upload archive
+            <input type="file" id="skill-upload-input" accept=".zip,.tar.gz,.tgz" style="display:none">
+          </label>
+        </h3>
+        <div id="skills-registry-list"></div>
+      </section>
+    `;
+
+    renderSkillCards(host.querySelector("#skills-registry-list"), skills);
+
+    host.querySelector("#skill-new").addEventListener("click", async () => {
+      const name = await appPrompt("Skill name (lowercase, hyphens ok):", "my-skill");
+      if (!name) return;
+      const n = name.trim().toLowerCase();
+      try {
+        await skillsPost("/skills/registry", { name: n });
+        state.skills.editing = { name: n };
+        renderSkills();
+      } catch (e) {
+        setStatus("Create failed: " + e.message, "error");
+      }
+    });
+
+    host.querySelector("#skill-upload-input").addEventListener("change", async e => {
+      const file = e.target.files[0]; e.target.value = "";
+      if (file) await doSkillUpload(host, file, false);
+    });
+
+    setupSkillDropZone(host, file => doSkillUpload(host, file, false));
+  }
+
+  function renderSkillCards(container, skills) {
+    container.innerHTML = "";
+    if (!skills.length) {
+      container.innerHTML = `
+        <p class="empty">No skills installed yet. Add one or upload an archive.</p>
+        <p class="settings-hint">Skills live in <code>skills-registry/installed/</code> — commit them yourself to track in git.</p>
+      `;
+      return;
+    }
+    for (const sk of skills) {
+      const card = document.createElement("div");
+      card.className = "form-card";
+      const linkedStr = sk.linked_in && sk.linked_in.length
+        ? `Used by: <strong>${escHtml(sk.linked_in.join(", "))}</strong>`
+        : `<span class="skills-unlinked">Not linked to any agent</span>`;
+      card.innerHTML = `
+        <div class="form-card-header">
+          <strong>${escHtml(sk.name)}</strong>
+          <span class="card-actions">
+            <button type="button" class="add-btn skill-edit-btn">View / Edit</button>
+            <button type="button" class="del-btn skill-del-btn">Delete</button>
+          </span>
+        </div>
+        <p class="skill-card-desc">${escHtml(sk.description || "(no description)")}</p>
+        <p class="skill-card-links settings-hint">${linkedStr}</p>
+      `;
+      card.querySelector(".skill-edit-btn").addEventListener("click", () => {
+        state.skills.editing = { name: sk.name };
+        renderSkills();
+      });
+      card.querySelector(".skill-del-btn").addEventListener("click", async () => {
+        if (!await appConfirm(`Delete skill "${sk.name}"?`)) return;
+        try {
+          await skillsDel(`/skills/registry/${sk.name}`);
+          renderSkills();
+        } catch (e) {
+          if (e.code === "LINKED_IN_AGENTS") {
+            const agents = (e.details && e.details.agents || []).join(", ");
+            if (!await appConfirm(`"${sk.name}" is still used by: ${agents}. Remove links and delete?`)) return;
+            try { await skillsDel(`/skills/registry/${sk.name}?force=1`); renderSkills(); }
+            catch (e2) { setStatus("Delete failed: " + e2.message, "error"); }
+          } else {
+            setStatus("Delete failed: " + e.message, "error");
+          }
+        }
+      });
+      container.appendChild(card);
+    }
+  }
+
+  async function renderSkillDetailView() {
+    const { name } = state.skills.editing;
+    bodyEl.innerHTML = `<p class="settings-loading">Loading…</p>`;
+    let detail;
+    try { detail = await skillsGet(`/skills/registry/${name}`); }
+    catch (e) {
+      bodyEl.innerHTML = `<p class="settings-error">${escHtml(e.message)}</p>`;
+      return;
+    }
+    const linkedStr = detail.linked_in && detail.linked_in.length
+      ? detail.linked_in.join(", ") : "none";
+
+    bodyEl.innerHTML = `
+      <div class="settings-form skill-detail-view">
+        <div class="skill-detail-header">
+          <button type="button" class="skill-back-btn">← Registry</button>
+          <span class="skill-detail-name">${escHtml(detail.name)}</span>
+          <span class="settings-hint">Used by: ${escHtml(linkedStr)}</span>
+        </div>
+        ${detail.description ? `<p class="settings-hint skill-detail-desc">${escHtml(detail.description)}</p>` : ""}
+        <div class="skill-resource-tabs"></div>
+        <textarea class="skill-md-editor raw-editor" spellcheck="false"></textarea>
+        <div class="skill-detail-footer">
+          <span class="skill-save-status"></span>
+          <button type="button" class="btn-primary skill-save-btn">Save</button>
+        </div>
+        <p class="settings-hint" style="margin-top:8px">
+          Skills live in <code>skills-registry/installed/</code> — commit changes yourself to track them in git.
+        </p>
+      </div>
+    `;
+
+    bodyEl.querySelector(".skill-back-btn").addEventListener("click", () => {
+      state.skills.editing = null;
+      renderSkills();
+    });
+
+    const tabsEl = bodyEl.querySelector(".skill-resource-tabs");
+    const ta = bodyEl.querySelector(".skill-md-editor");
+    let currentMtime = detail.mtime;
+    let currentContent = detail.content;
+    let currentReadOnly = false;
+
+    // Build resource sub-tabs.
+    const resourceDirs = [...new Set((detail.resources || []).map(r => r.split("/")[0]))];
+    const tabs = [{ label: "SKILL.md", key: "skill-md" }, ...resourceDirs.map(d => {
+      const count = (detail.resources || []).filter(r => r.startsWith(d + "/")).length;
+      return { label: `${d}/ (${count})`, key: d };
+    })];
+    tabsEl.innerHTML = `<div class="settings-subtabs" role="tablist" style="margin-bottom:8px">
+      ${tabs.map((t, i) => `<button type="button" data-tabkey="${escHtml(t.key)}" class="${i === 0 ? "active" : ""}">${escHtml(t.label)}</button>`).join("")}
+    </div>`;
+    tabsEl.querySelectorAll("button").forEach(btn => {
+      btn.addEventListener("click", () => {
+        tabsEl.querySelectorAll("button").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        if (btn.dataset.tabkey === "skill-md") {
+          ta.value = currentContent; ta.readOnly = false; currentReadOnly = false;
+        } else {
+          const files = (detail.resources || []).filter(r => r.startsWith(btn.dataset.tabkey + "/"));
+          ta.value = files.length ? files.join("\n") : "(empty)";
+          ta.readOnly = true; currentReadOnly = true;
+        }
+      });
+    });
+
+    ta.value = currentContent;
+    ta.addEventListener("input", () => { if (!currentReadOnly) currentContent = ta.value; });
+
+    const saveBtn = bodyEl.querySelector(".skill-save-btn");
+    const saveStatus = bodyEl.querySelector(".skill-save-status");
+    saveBtn.addEventListener("click", async () => {
+      saveBtn.disabled = true; saveStatus.textContent = "Saving…"; saveStatus.className = "skill-save-status";
+      try {
+        const res = await skillsPut(`/skills/registry/${name}`, { content: currentContent, mtime: currentMtime });
+        currentMtime = res.mtime;
+        saveStatus.textContent = "Saved."; saveStatus.className = "skill-save-status success";
+        setTimeout(() => { if (saveStatus.textContent === "Saved.") saveStatus.textContent = ""; }, 2000);
+      } catch (e) {
+        saveStatus.textContent = "Save failed: " + e.message;
+        saveStatus.className = "skill-save-status error";
+      } finally { saveBtn.disabled = false; }
+    });
+  }
+
+  async function renderSkillsPerAgentTab(host) {
+    host.innerHTML = `<p class="settings-loading">Loading…</p>`;
+    let agents, registry;
+    try {
+      [agents, registry] = await Promise.all([
+        skillsGet("/skills/agents").then(r => r.agents || []),
+        skillsGet("/skills/registry").then(r => r.skills || []),
+      ]);
+    } catch (e) {
+      host.innerHTML = `<p class="settings-error">${escHtml(e.message)}</p>`;
+      return;
+    }
+    host.innerHTML = "";
+    const section = document.createElement("section");
+    section.className = "form-section";
+    const h3 = document.createElement("h3"); h3.textContent = "Agent skills";
+    section.appendChild(h3);
+
+    for (const agentInfo of agents) {
+      const card = document.createElement("div");
+      card.className = "form-card";
+      const header = document.createElement("div");
+      header.className = "form-card-header";
+      header.innerHTML = `<strong>${escHtml(agentInfo.name)}</strong>` +
+        (agentInfo.skills_dir ? ` <span class="settings-hint">(${escHtml(agentInfo.skills_dir)})</span>` : "");
+      card.appendChild(header);
+      const body = document.createElement("div");
+      card.appendChild(body);
+
+      const refresh = async () => {
+        try {
+          const fresh = await skillsGet("/skills/agents");
+          const fa = (fresh.agents || []).find(a => a.name === agentInfo.name);
+          if (fa) renderSkillBlockContent(body, fa, registry, refresh);
+        } catch (_) {}
+      };
+      renderSkillBlockContent(body, agentInfo, registry, refresh);
+      section.appendChild(card);
+    }
+    host.appendChild(section);
+  }
+
+  // ─── Skills — upload helpers ───────────────────────────────────────────
+
+  async function doSkillUpload(host, file, overwrite) {
+    const fd = new FormData(); fd.append("file", file);
+    const url = `/api/skills/registry/upload${overwrite ? "?overwrite=1" : ""}`;
+    setStatus("Uploading…");
+    try {
+      const r = await fetch(url, { method: "POST", headers: authHeaders(), body: fd });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        if (r.status === 409 && j.code === "NAME_TAKEN") {
+          // Extract skill name from error message if possible.
+          const m = j.error && j.error.match(/"([^"]+)"/);
+          const sname = m ? m[1] : "existing skill";
+          if (await appConfirm(`"${sname}" already exists. Overwrite?`)) {
+            await doSkillUpload(host, file, true);
+          }
+          return;
+        }
+        throw new Error(j.error || `HTTP ${r.status}`);
+      }
+      setStatus(`Skill "${j.name}" uploaded successfully.`, "success");
+      renderSkills();
+    } catch (e) { setStatus("Upload failed: " + e.message, "error"); }
+  }
+
+  function setupSkillDropZone(el, onFile) {
+    el.addEventListener("dragover", e => { e.preventDefault(); el.classList.add("drop-active"); });
+    el.addEventListener("dragleave", e => { if (!el.contains(e.relatedTarget)) el.classList.remove("drop-active"); });
+    el.addEventListener("drop", e => {
+      e.preventDefault(); el.classList.remove("drop-active");
+      const file = e.dataTransfer.files[0]; if (!file) return;
+      if (!/\.(zip|tar\.gz|tgz)$/i.test(file.name)) {
+        setStatus("Only .zip or .tar.gz archives are accepted.", "error"); return;
+      }
+      onFile(file);
+    });
   }
 
   // ─── Save / Discard ────────────────────────────────────────────────────

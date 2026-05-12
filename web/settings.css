@@ -803,3 +803,136 @@
   color: #ffffff;
 }
 .app-dialog-actions .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+/* ─── Skills panel ─────────────────────────────────────────────────────── */
+
+.skills-subtab-body { padding-top: 0.5rem; }
+
+/* Registry cards */
+.skill-card-desc {
+  margin: 0.25rem 0 0.1rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+.skill-card-links { margin: 0.15rem 0 0; font-size: 0.8rem; }
+.skills-unlinked { opacity: 0.55; }
+.skill-upload-label { display: inline-flex; align-items: center; }
+
+/* Drop-zone active overlay */
+.drop-active { outline: 2px dashed var(--accent); outline-offset: -4px; }
+
+/* Detail view */
+.skill-detail-view {}
+.skill-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+.skill-back-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.skill-back-btn:hover { background: var(--bg-raised); color: var(--text); }
+.skill-detail-name { font-weight: 600; font-size: 1rem; }
+.skill-detail-desc { margin: 0 0 0.5rem; }
+.skill-md-editor { min-height: 320px; resize: vertical; }
+.skill-detail-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+}
+.skill-save-status { font-size: 0.85rem; color: var(--text-muted); }
+.skill-save-status.success { color: var(--success, #4caf50); }
+.skill-save-status.error { color: var(--error, #f44336); }
+
+/* Skill checkbox grid (registry → per-agent and agent card) */
+.skills-check-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.35rem 1rem;
+  padding: 0.5rem 0;
+}
+.skills-check-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  cursor: pointer;
+  padding: 0.3rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+.skills-check-item:hover { background: var(--bg-raised); }
+.skills-check-item input { margin-right: 0.4rem; cursor: pointer; }
+.skills-check-name { font-weight: 500; }
+.skills-check-desc {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  padding-left: 1.3rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Action row under the grid */
+.skills-block-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.4rem 0 0.2rem;
+}
+.skills-manage-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.8rem;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  margin-left: auto;
+}
+.skills-manage-link:hover { color: var(--accent-hover); }
+
+/* Warnings inside skill blocks */
+.skills-tool-warning {
+  font-size: 0.8rem;
+  color: var(--warning, #ff9800);
+  margin: 0.25rem 0;
+  padding: 0.3rem 0.5rem;
+  border-left: 2px solid var(--warning, #ff9800);
+}
+.skills-broken-warning {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--error, #f44336);
+  margin: 0.25rem 0;
+  padding: 0.3rem 0.5rem;
+  border-left: 2px solid var(--error, #f44336);
+  flex-wrap: wrap;
+}
+
+/* Skills block inside agent card */
+.skills-agent-section {
+  border-top: 1px solid var(--border);
+  margin-top: 0.75rem;
+  padding-top: 0.6rem;
+}
+.skills-agent-section-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 0.3rem;
+}
