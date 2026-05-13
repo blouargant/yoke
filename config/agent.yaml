@@ -22,6 +22,18 @@ agents:
         - skills
         - softskills
         - calc
+    - description: Searches the web and fetches page content to answer research questions.
+      enabled: true
+      mailbox: true
+      model_ref: balanced
+      name: web_agent
+      skills_dir: skills/web_agent
+      tools:
+        - serpapi
+        - ddg
+        - web
+        - skills
+        - softskills
     - description: Condenses long content into a structured brief.
       enabled: true
       mailbox: true

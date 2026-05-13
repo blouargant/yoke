@@ -425,7 +425,7 @@ function extractResponse(response) {
     if (typeof response[k] === "string") return formatSkillsList(response[k]);
   }
   // Common single-key wrappers the tool functions return
-  for (const k of ["output", "content", "matches", "result", "text", "plan"]) {
+  for (const k of ["output", "content", "matches", "result", "results", "markdown", "text", "plan"]) {
     if (typeof response[k] === "string") return response[k];
   }
   return JSON.stringify(response, null, 2);
