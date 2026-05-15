@@ -20,6 +20,10 @@ const TOKEN_KEY = "agent_toolkit_token";
 // browser console without touching this file — e.g. `AgentDebug.token(42)` to
 // account for an out-of-band chunk. Add new measurements by extending the
 // object below and calling `_paint()` after mutating state.
+// Per-session per-agent token accumulation. Declared here (before AgentDebug)
+// so _paint() can reference it without a temporal dead zone, and so the
+// context popup can read it independently of debug mode.
+const sessionAgentTokens = new Map(); // sessionId → Map(agentName → {prompt: number, output: number})
 const AgentDebug = {
   enabled: new URLSearchParams(location.search).get("debug") === "1"
         || localStorage.getItem("agent_toolkit_debug") === "1",
@@ -28,24 +32,34 @@ const AgentDebug = {
   tokens: 0, bytes: 0,
   renderMs: 0, renderCount: 0,
   server: null,
+  activeSession: null,
   reset() {
     this.tStart = this.tFirstToken = this.tEnd = 0;
     this.tokens = this.bytes = 0;
     this.renderMs = 0; this.renderCount = 0;
     this.server = null;
   },
-  start() { this.reset(); this.tStart = performance.now(); this._paint(); },
+  start(sessionId) { this.reset(); this.activeSession = sessionId || null; this.tStart = performance.now(); this._paint(); },
   firstToken() { if (!this.tFirstToken) this.tFirstToken = performance.now(); },
   token(bytes) { this.tokens++; this.bytes += bytes | 0; this._paint(); },
   render(ms) { this.renderMs += ms; this.renderCount++; this._paint(); },
   serverTiming(d) { this.server = d; this._paint(); },
   end() { this.tEnd = performance.now(); this._paint(); },
+  addAgentUsage(sessionId, agentName, prompt, output) {
+    if (!sessionId || !agentName) return;
+    let agents = sessionAgentTokens.get(sessionId);
+    if (!agents) { agents = new Map(); sessionAgentTokens.set(sessionId, agents); }
+    const ag = agents.get(agentName) || { prompt: 0, output: 0 };
+    ag.prompt += prompt | 0;
+    ag.output += output | 0;
+    agents.set(agentName, ag);
+  },
   _paint() {
     if (!this.enabled) return;
     if (!this.badge) {
       const b = document.createElement("div");
       b.id = "debug-badge";
-      b.style.cssText = "position:fixed;top:6px;right:8px;z-index:9999;background:#111c;color:#cdf;font:11px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;padding:6px 8px;border:1px solid #345;border-radius:6px;max-width:380px;white-space:pre;pointer-events:none";
+      b.style.cssText = "position:fixed;top:6px;right:8px;z-index:9999;background:#111c;color:#cdf;font:11px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;padding:6px 8px;border:1px solid #345;border-radius:6px;max-width:420px;white-space:pre;pointer-events:none";
       document.body.appendChild(b);
       this.badge = b;
     }
@@ -59,6 +73,25 @@ const AgentDebug = {
     ];
     if (this.server) {
       lines.push(`[server] ttfb=${this.server.ttfb_ms}ms  chunks=${this.server.tokens}  ${(this.server.tok_per_sec||0).toFixed(1)}/s  total=${this.server.total_ms}ms`);
+    }
+    const agentMap = sessionAgentTokens.get(this.activeSession);
+    if (agentMap && agentMap.size > 0) {
+      const fmtTok = n => n >= 1e6 ? (n/1e6).toFixed(2)+"M" : n >= 1000 ? (n/1000).toFixed(1)+"K" : String(n);
+      const fmtCost = (p, o) => "~$" + (p * 3.0/1_000_000 + o * 15.0/1_000_000).toFixed(4);
+      const entries = [...agentMap.entries()].sort((a, b) =>
+        a[0] === "leader" ? -1 : b[0] === "leader" ? 1 : (b[1].prompt + b[1].output) - (a[1].prompt + a[1].output)
+      );
+      const nameW = Math.min(14, Math.max(...entries.map(([n]) => n.length)));
+      let totP = 0, totO = 0;
+      lines.push("[agents]");
+      for (const [name, {prompt, output}] of entries) {
+        totP += prompt; totO += output;
+        lines.push(`         ${name.padEnd(nameW)}  in=${fmtTok(prompt).padStart(6)}  out=${fmtTok(output).padStart(5)}  ${fmtCost(prompt, output)}`);
+      }
+      if (entries.length > 1) {
+        lines.push(`         ${"─".repeat(nameW + 32)}`);
+        lines.push(`         ${"total".padEnd(nameW)}  in=${fmtTok(totP).padStart(6)}  out=${fmtTok(totO).padStart(5)}  ${fmtCost(totP, totO)}`);
+      }
     }
     this.badge.textContent = lines.join("\n");
   },
@@ -92,6 +125,7 @@ const els = {
   ctxPopMax:      document.getElementById("ctx-pop-max"),
   ctxPopPct:      document.getElementById("ctx-pop-pct"),
   ctxPopBudget:   document.getElementById("ctx-pop-budget"),
+  ctxPopAgents:   document.getElementById("ctx-pop-agents"),
   ctxCompactBtn:  document.getElementById("ctx-compact-btn"),
   composerResize: document.getElementById("composer-resize"),
   fileInput:          document.getElementById("file-input"),
@@ -243,6 +277,7 @@ function renderCtxPopup(sessionId) {
     els.ctxPopMax.textContent    = "—";
     els.ctxPopPct.textContent    = "—";
     els.ctxPopBudget.textContent = "—";
+    if (els.ctxPopAgents) els.ctxPopAgents.hidden = true;
     return;
   }
   const { tokens_used, window_tokens } = usage;
@@ -255,6 +290,35 @@ function renderCtxPopup(sessionId) {
   const acc  = sessionTokenAccum.get(sessionId) || { prompt: 0, output: 0 };
   const cost = acc.prompt * PRICE_INPUT_PER_TOK + acc.output * PRICE_OUTPUT_PER_TOK;
   els.ctxPopBudget.textContent = cost > 0 ? `$${cost.toFixed(4)}` : "—";
+
+  // Per-agent breakdown
+  const agentsEl = els.ctxPopAgents;
+  if (agentsEl) {
+    const agentMap = sessionAgentTokens.get(sessionId);
+    if (!agentMap || agentMap.size === 0) {
+      agentsEl.hidden = true;
+    } else {
+      agentsEl.hidden = false;
+      agentsEl.innerHTML = "";
+      const entries = [...agentMap.entries()].sort((a, b) =>
+        a[0] === "leader" ? -1 : b[0] === "leader" ? 1 : (b[1].prompt + b[1].output) - (a[1].prompt + a[1].output)
+      );
+      for (const [name, {prompt, output}] of entries) {
+        const agentCost = prompt * PRICE_INPUT_PER_TOK + output * PRICE_OUTPUT_PER_TOK;
+        const row = document.createElement("div");
+        row.className = "ctx-pop-agent-row";
+        const nameEl = document.createElement("span");
+        nameEl.className = "ctx-pop-agent-name";
+        nameEl.textContent = name;
+        const costEl = document.createElement("span");
+        costEl.className = "ctx-pop-agent-cost";
+        costEl.textContent = `$${agentCost.toFixed(4)}`;
+        row.appendChild(nameEl);
+        row.appendChild(costEl);
+        agentsEl.appendChild(row);
+      }
+    }
+  }
 }
 
 // fetchUsageEstimate fetches a server-side token/cost estimate for a cold
@@ -1277,6 +1341,7 @@ async function deleteSession(id, li) {
     sessionContainers.delete(id);
     sessionCtxUsage.delete(id);
     sessionTokenAccum.delete(id);
+    sessionAgentTokens.delete(id);
     // Remove any pending ask_user widgets belonging to this session.
     const slot = document.getElementById("ask-user-slot");
     if (slot) {
@@ -1339,6 +1404,7 @@ async function selectSession(id) {
   }
 
   activeSessionId = id;
+  if (AgentDebug.enabled) { AgentDebug.activeSession = id; AgentDebug._paint(); }
   clearPinnedPrompt();
   for (const li of els.list.children) {
     li.classList.toggle("active", li.dataset.id === id);
@@ -1628,7 +1694,7 @@ async function sendMessage() {
       return;
     }
 
-    AgentDebug.start();
+    AgentDebug.start(sessionId);
     for await (const { event, data } of parseSSE(res)) {
       switch (event) {
         case "token": {
@@ -1709,8 +1775,11 @@ async function sendMessage() {
           acc.prompt += (data.prompt_tokens || 0);
           acc.output += (data.output_tokens || 0);
           sessionTokenAccum.set(sessionId, acc);
-          if (sessionId === activeSessionId && els.ctxPopup && !els.ctxPopup.hasAttribute("hidden")) {
-            renderCtxPopup(sessionId);
+          // Always accumulate per-agent tokens (used by ctx popup and debug badge).
+          AgentDebug.addAgentUsage(sessionId, data.agent, data.prompt_tokens || 0, data.output_tokens || 0);
+          if (sessionId === activeSessionId) {
+            if (els.ctxPopup && !els.ctxPopup.hasAttribute("hidden")) renderCtxPopup(sessionId);
+            if (AgentDebug.enabled) AgentDebug._paint();
           }
           break;
         }

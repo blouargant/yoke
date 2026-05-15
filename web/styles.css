@@ -1303,6 +1303,30 @@ body.resizing-composer #composer-resize { transition: none; }
   font-weight: 500;
 }
 
+#ctx-pop-agents {
+  margin: 0 0 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+#ctx-pop-agents[hidden] { display: none; }
+
+.ctx-pop-agent-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 2px 0;
+  font-size: 12px;
+}
+.ctx-pop-agent-name {
+  color: var(--text-muted);
+  padding-left: 8px;
+}
+.ctx-pop-agent-cost {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
 #ctx-compact-btn {
   width: 100%;
   background: var(--accent);
