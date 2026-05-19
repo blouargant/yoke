@@ -80,7 +80,7 @@ func (c configFiles) writePath(name string) (string, bool) {
 // configFileNames maps the editor's whitelisted short names to the
 // underlying JSON filenames. Used by both path() and writePath().
 var configFileNames = map[string]string{
-	"agent":       "agent.json",
+	"agent":       "agents.json",
 	"permissions": "permissions.json",
 	"mcp":         "mcp_config.json",
 }
@@ -91,7 +91,7 @@ var configFileNames = map[string]string{
 // the editor always targets the file actually loaded by the running agent.
 func resolveConfigFiles(opts agent.Options) configFiles {
 	out := configFiles{
-		Agent:       firstNonEmpty(opts.ConfigPath, paths.FindConfig("agent.json")),
+		Agent:       firstNonEmpty(opts.ConfigPath, paths.FindConfig("agents.json")),
 		Permissions: firstNonEmpty(opts.PermissionsConfigPath, paths.FindConfig("permissions.json")),
 		MCP:         firstNonEmpty(opts.MCPSConfigPath, paths.FindConfig("mcp_config.json")),
 	}
@@ -687,6 +687,23 @@ func registerConfigRoutes(rg *gin.RouterGroup, files configFiles, restart *resta
 
 					// Update the main config to reference agents by name only
 					m["agents"] = agentNames
+
+					// Delete write-registry dirs for agents that are no longer in
+					// the list. Only the write dir is touched — dirs that also
+					// exist in other registry layers (built-ins under
+					// ./registry/agents/) are untouched there.
+					agentSet := make(map[string]bool, len(agentNames))
+					for _, n := range agentNames {
+						agentSet[n] = true
+					}
+					if entries, err := os.ReadDir(agentsRegistry); err == nil {
+						for _, entry := range entries {
+							if !entry.IsDir() || agentSet[entry.Name()] {
+								continue
+							}
+							_ = os.RemoveAll(filepath.Join(agentsRegistry, entry.Name()))
+						}
+					}
 				}
 			}
 		}

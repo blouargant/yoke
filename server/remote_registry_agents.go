@@ -44,13 +44,24 @@ func registerRemoteAgentRegistryRoutes(
 			c.JSON(http.StatusBadGateway, skillsErr("REMOTE_ERROR", err.Error()))
 			return
 		}
+		// Reconcile disk-based Installed flag with the runtime config list.
+		// An agent whose directory exists on disk but was removed from
+		// config/agents.json must show as not-installed.
+		configured := readConfiguredAgentNames(agentsConfigRead())
+		for i := range agents {
+			if agents[i].Installed && !configured[agents[i].Name] {
+				agents[i].Installed = false
+			}
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"agents":   agents,
 			"registry": toPublicRemote(*reg),
 		})
 	})
 
-	// GET /remotes/:id/agent/*dirpath — fetch raw agent.json content.
+	// GET /remotes/:id/agent/*dirpath — fetch raw agent content.
+	// For native format agents dirPath is a directory; we append /agent.json.
+	// For Claude Code format agents dirPath is the .md file path itself.
 	rg.GET("/remotes/:id/agent/*dirpath", func(c *gin.Context) {
 		dirPath := strings.Trim(c.Param("dirpath"), "/")
 		if dirPath == "" {
@@ -61,7 +72,18 @@ func registerRemoteAgentRegistryRoutes(
 		if !ok {
 			return
 		}
-		body, err := registries.FetchAgentJSON(ref, reg.Token, dirPath)
+		var body []byte
+		var err error
+		if strings.HasSuffix(dirPath, ".md") {
+			// Claude Code markdown format: dirPath is the file path itself.
+			var status int
+			body, status, err = ref.RawFile(dirPath, reg.Token)
+			if err == nil && status != 200 {
+				err = fmt.Errorf("HTTP %d fetching %s", status, dirPath)
+			}
+		} else {
+			body, err = registries.FetchAgentJSON(ref, reg.Token, dirPath)
+		}
 		if err != nil {
 			c.JSON(http.StatusBadGateway, skillsErr("REMOTE_ERROR", err.Error()))
 			return
@@ -118,6 +140,28 @@ func registerRemoteAgentRegistryRoutes(
 			"enabled": enabled,
 		})
 	})
+}
+
+// readConfiguredAgentNames returns the set of agent names currently listed in
+// config/agents.json. Returns an empty (non-nil) map on any read/parse error
+// so callers can safely use the result for membership tests.
+func readConfiguredAgentNames(configPath string) map[string]bool {
+	out := map[string]bool{}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return out
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return out
+	}
+	rawAgents, _ := cfg["agents"].([]any)
+	for _, item := range rawAgents {
+		if s, ok := item.(string); ok && s != "" {
+			out[strings.TrimSpace(s)] = true
+		}
+	}
+	return out
 }
 
 // appendAgentToConfig adds name to the `agents` list in the runtime config

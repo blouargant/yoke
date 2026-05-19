@@ -21,7 +21,7 @@
 
   // Server-backed JSON configs. Each id matches /api/config/{parsed,file}/<id>.
   const FILES = [
-    { id: "agent",       label: "Agent",       form: "agent" },
+    { id: "agent",       label: "Agents",      form: "agent" },
     { id: "permissions", label: "Permissions", form: "permissions" },
     { id: "mcp",         label: "MCP",         form: "mcp" },
   ];
@@ -33,7 +33,7 @@
   const USER_COMMANDS_ID = "user-commands";
   const MENU_ITEMS = [
     { id: "skills",        label: "Skills",      title: "Skills",                    kind: "client" },
-    { id: "agent",         label: "Agent",       title: "Agent Configuration",       kind: "json" },
+    { id: "agent",         label: "Agents",      title: "Agent Configuration",       kind: "json" },
     { id: "permissions",   label: "Permissions", title: "Permissions",               kind: "json" },
     { id: "mcp",           label: "MCP",         title: "MCP Servers",               kind: "json" },
     { id: USER_COMMANDS_ID,label: "Commands",    title: "Slash Commands",            kind: "client" },
@@ -999,7 +999,17 @@
 
     bodyEl.querySelectorAll(".settings-subtabs button").forEach(b => {
       b.addEventListener("click", () => {
-        if (state.activeAgentSubtab === b.dataset.subtab) return;
+        if (state.activeAgentSubtab === b.dataset.subtab) {
+          if (b.dataset.subtab === "remotes" && state.agentRemotes &&
+              (state.agentRemotes.browsing || state.agentRemotes.viewing)) {
+            state.agentRemotes = { browsing: null, viewing: null };
+            renderAgentForm();
+          }
+          return;
+        }
+        if (b.dataset.subtab === "remotes") {
+          state.agentRemotes = { browsing: null, viewing: null };
+        }
         state.activeAgentSubtab = b.dataset.subtab;
         renderAgentForm();
       });
@@ -1092,7 +1102,14 @@
           const names = (res.agents || []).map(a => a.name).join(", ");
           const anyEnabled = (res.agents || []).some(a => a.enabled);
           if (anyEnabled) {
-            setStatus(`Imported: ${names}. Reload to activate.`, "success");
+            await doReload();
+            await loadParsed("agent");
+            state.activeAgentSubtab = "agents";
+            const lastName = (res.agents || []).filter(a => a.enabled).map(a => a.name).pop();
+            const newAgents = (state.parsed["agent"].value || {}).agents || [];
+            const newIdx = lastName ? newAgents.findIndex(a => a.name === lastName) : newAgents.length - 1;
+            state.activeAgentIdx = newIdx >= 0 ? newIdx : newAgents.length - 1;
+            renderAgentForm();
           } else {
             setStatus(`Imported: ${names}.`, "success");
           }
@@ -3793,6 +3810,47 @@
     return rest.slice(idx + 4).trimStart();
   }
 
+  // parseAgentFrontmatter extracts the YAML frontmatter fields used by Claude
+  // Code agent files: name, description (plain or folded ">"), skills and
+  // mcpServers (list). Returns null when no frontmatter block is found.
+  function parseAgentFrontmatter(content) {
+    const s = content.trimStart();
+    if (!s.startsWith("---")) return null;
+    const rest = s.slice(3);
+    const idx = rest.indexOf("\n---");
+    if (idx < 0) return null;
+    const fm = rest.slice(0, idx);
+    const result = {};
+    const lines = fm.split("\n");
+    let i = 0;
+    while (i < lines.length) {
+      const m = lines[i].match(/^(\w+):\s*(.*)/);
+      if (!m) { i++; continue; }
+      const key = m[1], val = m[2].trim();
+      if (val === ">" || val === "|") {
+        let multi = "";
+        i++;
+        while (i < lines.length && (lines[i].startsWith("  ") || lines[i] === "")) {
+          multi += lines[i].trim() + " ";
+          i++;
+        }
+        result[key] = multi.trim();
+      } else if (val === "") {
+        const items = [];
+        i++;
+        while (i < lines.length && /^\s+-\s+/.test(lines[i])) {
+          items.push(lines[i].replace(/^\s+-\s+/, "").trim());
+          i++;
+        }
+        result[key] = items;
+      } else {
+        result[key] = val;
+        i++;
+      }
+    }
+    return result;
+  }
+
   async function renderSkillDetailView() {
     const { name } = state.skills.editing;
     bodyEl.innerHTML = `<p class="settings-loading">Loading…</p>`;
@@ -4583,7 +4641,7 @@
           <p class="settings-loading">Loading…</p>
         </div>
         <div class="skill-content-wrap">
-          <pre class="skill-md-preview" id="agent-json-preview" style="white-space:pre-wrap;"></pre>
+          <div class="skill-md-preview markdown-body" id="agent-json-preview"></div>
         </div>
         <div class="skill-detail-footer">
           <span></span>
@@ -4614,26 +4672,48 @@
       return;
     }
 
-    // Parse the agent.json to populate the frontmatter-style card with the
-    // most relevant fields. Unknown fields fall through to the raw preview.
-    let parsed = null;
-    try { parsed = JSON.parse(content); } catch (_) { parsed = null; }
-    if (parsed && typeof parsed === "object") {
-      const rows = [];
-      const keys = ["name", "description", "model_ref", "builtin", "leader"];
-      for (const k of keys) {
-        if (parsed[k] === undefined) continue;
-        rows.push(`<div class="skill-fm-row"><span class="skill-fm-key">${escHtml(k)}</span><span class="skill-fm-value">${escHtml(String(parsed[k]))}</span></div>`);
+    const isMarkdown = agent.format === "claude" || agent.dir_path.endsWith(".md");
+
+    if (isMarkdown) {
+      // Claude Code markdown format: parse YAML frontmatter for the card,
+      // render the body as markdown.
+      const fm = parseAgentFrontmatter(content);
+      if (fm) {
+        const rows = [];
+        if (fm.name) rows.push(`<div class="skill-fm-row"><span class="skill-fm-key">name</span><span class="skill-fm-value">${escHtml(fm.name)}</span></div>`);
+        if (fm.description) rows.push(`<div class="skill-fm-row"><span class="skill-fm-key">description</span><span class="skill-fm-value">${escHtml(fm.description)}</span></div>`);
+        for (const listKey of ["skills", "mcpServers"]) {
+          if (Array.isArray(fm[listKey]) && fm[listKey].length) {
+            const tags = fm[listKey].map(t => `<span class="skill-mkt-tag">${escHtml(t)}</span>`).join("");
+            rows.push(`<div class="skill-fm-row"><span class="skill-fm-key">${escHtml(listKey)}</span><span class="skill-fm-value skill-fm-tags">${tags}</span></div>`);
+          }
+        }
+        fmCard.innerHTML = rows.join("") || "";
+      } else {
+        fmCard.innerHTML = "";
       }
-      if (Array.isArray(parsed.tools) && parsed.tools.length) {
-        const tags = parsed.tools.map(t => `<span class="skill-mkt-tag">${escHtml(String(t))}</span>`).join("");
-        rows.push(`<div class="skill-fm-row"><span class="skill-fm-key">tools</span><span class="skill-fm-value skill-fm-tags">${tags}</span></div>`);
-      }
-      fmCard.innerHTML = rows.join("") || "";
+      preview.innerHTML = marked.parse(stripFrontmatter(content), { breaks: false, gfm: true });
     } else {
-      fmCard.innerHTML = "";
+      // Native yoke JSON format: populate card from parsed fields, show raw JSON.
+      let parsed = null;
+      try { parsed = JSON.parse(content); } catch (_) { parsed = null; }
+      if (parsed && typeof parsed === "object") {
+        const rows = [];
+        const keys = ["name", "description", "model_ref", "builtin", "leader"];
+        for (const k of keys) {
+          if (parsed[k] === undefined) continue;
+          rows.push(`<div class="skill-fm-row"><span class="skill-fm-key">${escHtml(k)}</span><span class="skill-fm-value">${escHtml(String(parsed[k]))}</span></div>`);
+        }
+        if (Array.isArray(parsed.tools) && parsed.tools.length) {
+          const tags = parsed.tools.map(t => `<span class="skill-mkt-tag">${escHtml(String(t))}</span>`).join("");
+          rows.push(`<div class="skill-fm-row"><span class="skill-fm-key">tools</span><span class="skill-fm-value skill-fm-tags">${tags}</span></div>`);
+        }
+        fmCard.innerHTML = rows.join("") || "";
+      } else {
+        fmCard.innerHTML = "";
+      }
+      preview.innerHTML = `<pre style="white-space:pre-wrap;">${escHtml(content)}</pre>`;
     }
-    preview.textContent = content;
 
     const installBtn = host.querySelector(".remote-install-btn");
     if (installBtn) {
@@ -4661,7 +4741,13 @@
       if (res.enable_error) {
         setStatus(`Agent "${res.name}" installed, but enabling failed: ${res.enable_error}`, "error");
       } else if (res.enabled) {
-        setStatus(`Agent "${res.name}" installed and enabled. Reload to activate.`, "success");
+        await doReload();
+        await loadParsed("agent");
+        state.activeAgentSubtab = "agents";
+        const newAgents = (state.parsed["agent"].value || {}).agents || [];
+        const newIdx = newAgents.findIndex(a => a.name === res.name);
+        state.activeAgentIdx = newIdx >= 0 ? newIdx : newAgents.length - 1;
+        renderAgentForm();
       } else {
         setStatus(`Agent "${res.name}" installed.`, "success");
       }

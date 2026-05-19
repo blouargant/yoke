@@ -608,20 +608,31 @@ func ensureDefaultSquad(squads []RuntimeSquadConfig, agents []RuntimeAgentConfig
 // loadAgentFromRegistry loads an agent definition from the registry.
 // Path is {registryDir}/{name}/agent.json. If the agent's name field is
 // empty, it is inferred from the directory name.
-func loadAgentFromRegistry(name, registryDir string) (AgentEntry, error) {
-	p := filepath.Join(registryDir, name, "agent.json")
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return AgentEntry{}, fmt.Errorf("agent registry %q: %w", p, err)
+// loadAgentFromRegistry searches registryDirs in order and returns the first
+// agent.json found. This mirrors the config 3-layer lookup so that a
+// $YOKE_HOME/registry/agents/<name>/agent.json override takes precedence over
+// ./registry/agents/<name>/agent.json without hiding agents that only exist in
+// one of the layers.
+func loadAgentFromRegistry(name string, registryDirs []string) (AgentEntry, error) {
+	for _, dir := range registryDirs {
+		p := filepath.Join(dir, name, "agent.json")
+		b, err := os.ReadFile(p)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return AgentEntry{}, fmt.Errorf("agent registry %q: %w", p, err)
+		}
+		var e AgentEntry
+		if err := json.Unmarshal(b, &e); err != nil {
+			return AgentEntry{}, fmt.Errorf("agent registry %q: decode json: %w", p, err)
+		}
+		if e.Name == "" {
+			e.Name = name
+		}
+		return e, nil
 	}
-	var e AgentEntry
-	if err := json.Unmarshal(b, &e); err != nil {
-		return AgentEntry{}, fmt.Errorf("agent registry %q: decode json: %w", p, err)
-	}
-	if e.Name == "" {
-		e.Name = name
-	}
-	return e, nil
+	return AgentEntry{}, fmt.Errorf("agent %q not found in any registry directory", name)
 }
 
 // ResolveRuntimeSettings loads and merges runtime settings using precedence:
@@ -680,10 +691,10 @@ func ResolveRuntimeSettings(opts Options) (RuntimeSettings, error) {
 		out.Models = normalizeModelCatalog(cfg.Models)
 	}
 	if len(cfg.Agents) > 0 {
-		agentsRegistryDir := paths.AgentsRegistryDir()
+		agentsRegistryDirs := paths.AgentsRegistrySearchDirs()
 		entries := make([]AgentEntry, 0, len(cfg.Agents))
 		for _, name := range cfg.Agents {
-			e, err := loadAgentFromRegistry(strings.ToLower(strings.TrimSpace(name)), agentsRegistryDir)
+			e, err := loadAgentFromRegistry(strings.ToLower(strings.TrimSpace(name)), agentsRegistryDirs)
 			if err != nil {
 				return RuntimeSettings{}, err
 			}

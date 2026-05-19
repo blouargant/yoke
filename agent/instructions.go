@@ -12,18 +12,20 @@ import (
 // from registry/agents/<name>/instruction.md, or falls back to registry/agents/default.md,
 // or "" if neither exist.
 func ReadAgentInstruction(name string) string {
-	agentsDir := paths.AgentsRegistryDir()
+	dirs := paths.AgentsRegistrySearchDirs()
 
-	// Try agent-specific instruction
-	instructionPath := filepath.Join(agentsDir, name, "instruction.md")
-	if b, err := os.ReadFile(instructionPath); err == nil {
-		return strings.TrimRight(string(b), "\n")
+	// Try agent-specific instruction across all registry layers.
+	for _, dir := range dirs {
+		if b, err := os.ReadFile(filepath.Join(dir, name, "instruction.md")); err == nil {
+			return strings.TrimRight(string(b), "\n")
+		}
 	}
 
-	// Fall back to default instruction
-	defaultPath := filepath.Join(agentsDir, "default.md")
-	if b, err := os.ReadFile(defaultPath); err == nil {
-		return strings.TrimRight(string(b), "\n")
+	// Fall back to default instruction across all registry layers.
+	for _, dir := range dirs {
+		if b, err := os.ReadFile(filepath.Join(dir, "default.md")); err == nil {
+			return strings.TrimRight(string(b), "\n")
+		}
 	}
 
 	return ""

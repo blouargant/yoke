@@ -202,6 +202,12 @@ func skillsRegistrySearchDirs() []string {
 	return out
 }
 
+// AgentsRegistrySearchDirs returns all candidate agent registry directories in
+// high-to-low precedence order. Unlike AgentsRegistryDir (which stops at the
+// first existing directory), this returns the full list so callers can search
+// each layer for a specific agent.
+func AgentsRegistrySearchDirs() []string { return agentsRegistrySearchDirs() }
+
 func agentsRegistrySearchDirs() []string {
 	out := []string{
 		filepath.Join(Home(), "registry/agents"),
