@@ -141,8 +141,20 @@ func registerRemoteMCPRegistryRoutes(
 				Args:    def.Args,
 				Env:     def.Env,
 				URL:     def.URL,
+				Headers: def.Headers,
 			}
-			added, err := mergeMCPServer(mcpConfigRead(), mcpConfigWrite, def.Name, srv)
+			inputs := make([]internalmcp.Input, len(def.Inputs))
+			for i, inp := range def.Inputs {
+				inputs[i] = internalmcp.Input{
+					ID:          inp.ID,
+					Type:        inp.Type,
+					Description: inp.Description,
+					Password:    inp.Password,
+					Options:     inp.Options,
+					Default:     inp.Default,
+				}
+			}
+			added, err := mergeMCPServer(mcpConfigRead(), mcpConfigWrite, def.Name, srv, inputs)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, skillsErr("FS_ERROR", err.Error()))
 				return
@@ -189,7 +201,7 @@ func registerRemoteMCPRegistryRoutes(
 		}
 		srv.Name = serverName
 
-		added, err := mergeMCPServer(mcpConfigRead(), mcpConfigWrite, serverName, srv)
+		added, err := mergeMCPServer(mcpConfigRead(), mcpConfigWrite, serverName, srv, nil)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, skillsErr("FS_ERROR", err.Error()))
 			return
@@ -213,10 +225,10 @@ func readInstalledMCPNames(configPath string) map[string]bool {
 	return out
 }
 
-// mergeMCPServer reads the current mcp_config.json, adds or updates a server entry,
-// and writes it back to writePath atomically. Returns (added, error): added=false
-// when a server with that name was already present (idempotent update).
-func mergeMCPServer(readPath, writePath, serverName string, srv internalmcp.Server) (bool, error) {
+// mergeMCPServer reads the current mcp_config.json, adds or updates a server entry
+// and merges any new inputs (by ID) into the top-level inputs array, then writes
+// atomically. Returns (added, error): added=false when the server name was already present.
+func mergeMCPServer(readPath, writePath, serverName string, srv internalmcp.Server, inputs []internalmcp.Input) (bool, error) {
 	cfg, err := internalmcp.Load(readPath)
 	if err != nil {
 		return false, fmt.Errorf("read mcp_config.json: %w", err)
@@ -226,6 +238,20 @@ func mergeMCPServer(readPath, writePath, serverName string, srv internalmcp.Serv
 		cfg.Servers = map[string]internalmcp.Server{}
 	}
 	cfg.Servers[serverName] = srv
+
+	// Merge inputs: add any input not already present (matched by ID).
+	for _, newIn := range inputs {
+		found := false
+		for _, existing := range cfg.Inputs {
+			if existing.ID == newIn.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			cfg.Inputs = append(cfg.Inputs, newIn)
+		}
+	}
 
 	out, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
