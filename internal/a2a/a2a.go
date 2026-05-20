@@ -35,6 +35,14 @@ type Agent struct {
 	URL         string            `json:"url"`
 	Description string            `json:"description,omitempty"`
 	Headers     map[string]string `json:"headers,omitempty"`
+	// Squad is the default remote squad name to address. Empty means the
+	// receiving server's own default squad. The tool's `squad` argument
+	// (when provided by the caller) overrides this on a per-call basis.
+	Squad string `json:"squad,omitempty"`
+	// SessionName is the default friendly name of the remote session to
+	// address. Empty means the call is stateless (ephemeral session on
+	// the remote). The tool's `session_name` argument overrides this.
+	SessionName string `json:"session_name,omitempty"`
 }
 
 // Input is one user-supplied value referenced from agent config via

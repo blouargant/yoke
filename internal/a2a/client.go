@@ -62,29 +62,51 @@ type rpcErrorBody struct {
 }
 
 type sendTaskParams struct {
-	ID      string      `json:"id"`
-	Message wireMessage `json:"message"`
+	ID       string         `json:"id"`
+	Message  wireMessage    `json:"message"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // SendTask sends a synchronous tasks/send call to the remote A2A endpoint and
 // returns the concatenated text of every text part across all returned
 // artifacts. A non-completed (failed / canceled) terminal state is surfaced
 // as an error.
-func SendTask(ctx context.Context, agent Agent, prompt string) (string, error) {
+//
+// `squad` selects the remote squad. Empty falls back to the receiving
+// server's own default squad. Unknown names produce a JSON-RPC error
+// surfaced through the returned error.
+//
+// `sessionName` requests that the call run against an existing named web UI
+// session on the remote (its friendly name in the registry, e.g.
+// "teaching-kite"). Empty means the call is stateless: a fresh throwaway
+// session is created for the duration of the request and discarded.
+func SendTask(ctx context.Context, agent Agent, prompt, squad, sessionName string) (string, error) {
 	endpoint := strings.TrimRight(agent.URL, "/") + "/"
 	taskID := fmt.Sprintf("task-%d", time.Now().UnixNano())
+
+	params := sendTaskParams{
+		ID: taskID,
+		Message: wireMessage{
+			Role:  "user",
+			Parts: []wirePart{{Type: "text", Text: prompt}},
+		},
+	}
+	meta := map[string]any{}
+	if s := strings.TrimSpace(squad); s != "" {
+		meta["squad"] = s
+	}
+	if s := strings.TrimSpace(sessionName); s != "" {
+		meta["session_name"] = s
+	}
+	if len(meta) > 0 {
+		params.Metadata = meta
+	}
 
 	body, err := json.Marshal(rpcRequest{
 		JSONRPC: "2.0",
 		Method:  "tasks/send",
 		ID:      taskID,
-		Params: sendTaskParams{
-			ID: taskID,
-			Message: wireMessage{
-				Role:  "user",
-				Parts: []wirePart{{Type: "text", Text: prompt}},
-			},
-		},
+		Params:  params,
 	})
 	if err != nil {
 		return "", fmt.Errorf("a2a %s: marshal request: %w", agent.Name, err)

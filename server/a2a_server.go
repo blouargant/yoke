@@ -131,17 +131,21 @@ type taskRecord struct {
 
 // a2aServer is the A2A protocol HTTP server.
 type a2aServer struct {
-	manager *toolkitagent.Manager
-	token   string // optional Bearer token; empty = no auth
-	mu      sync.RWMutex
-	records map[string]*taskRecord
+	manager  *toolkitagent.Manager
+	registry *registry          // optional: lets A2A address web UI sessions by name
+	runGuard *sessionRunGuard   // optional: serialises with web UI turns on the same session
+	token    string             // optional Bearer token; empty = no auth
+	mu       sync.RWMutex
+	records  map[string]*taskRecord
 }
 
-func newA2AServer(manager *toolkitagent.Manager, token string) *a2aServer {
+func newA2AServer(manager *toolkitagent.Manager, reg *registry, guard *sessionRunGuard, token string) *a2aServer {
 	return &a2aServer{
-		manager: manager,
-		token:   token,
-		records: make(map[string]*taskRecord),
+		manager:  manager,
+		registry: reg,
+		runGuard: guard,
+		token:    token,
+		records:  make(map[string]*taskRecord),
 	}
 }
 
@@ -239,18 +243,32 @@ func (s *a2aServer) tasksSend(w http.ResponseWriter, r *http.Request, req rpcReq
 		writeRPCErr(w, req.ID, -32602, "invalid params: id required")
 		return
 	}
+	routing, err := s.resolveRouting(p.Metadata, p.ID)
+	if err != nil {
+		writeRPCErr(w, req.ID, -32602, "invalid params: "+err.Error())
+		return
+	}
 
 	parentCtx := r.Context()
 	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
-	rec := s.newRecord(p.ID, p.SessionID, p.Message, cancel)
+	// When targeting a real session, the raw sessionId from the client is
+	// ignored — registry meta is authoritative.
+	rec := s.newRecord(p.ID, routing.SessionID, p.Message, cancel)
+
+	// Serialise with any other turn (web UI or A2A) running on this session.
+	if routing.Persistent && s.runGuard != nil {
+		release := s.runGuard.acquire(routing.SessionID)
+		defer release()
+	}
 
 	rec.mu.Lock()
 	rec.task.Status.State = a2aStateWorking
 	rec.task.Status.Timestamp = nowRFC3339()
 	rec.mu.Unlock()
 
-	responseText, runErr := s.runAgent(ctx, rec.adkSessionID(), p.ID, a2aMessageText(p.Message))
+	promptText := a2aMessageText(p.Message)
+	responseText, runErr := s.runAgent(ctx, routing.Squad, routing.UserID, routing.SessionID, p.ID, promptText)
 
 	rec.mu.Lock()
 	switch {
@@ -277,10 +295,28 @@ func (s *a2aServer) tasksSend(w http.ResponseWriter, r *http.Request, req rpcReq
 	}
 	rec.task.Status.Timestamp = nowRFC3339()
 	taskCopy := rec.task
+	finalState := rec.task.Status.State
 	rec.mu.Unlock()
 	close(rec.doneCh)
 
+	if routing.Persistent && finalState == a2aStateCompleted {
+		s.persistA2ATurn(routing, promptText, responseText)
+	}
+
 	writeRPCOK(w, req.ID, taskCopy)
+}
+
+// persistA2ATurn appends the turn to the conversation file and bumps the
+// session's LastUsedAt, so an A2A turn against a web UI session is visible
+// in the UI on next reload. Errors are logged but never fail the call:
+// persistence is a side effect of the turn, not its purpose.
+func (s *a2aServer) persistA2ATurn(routing *sessionRouting, prompt, response string) {
+	if s.registry != nil {
+		s.registry.Touch(routing.SessionID)
+	}
+	if err := appendConversationTurn(routing.SessionID, prompt, response); err != nil {
+		log.Printf("a2a: persist turn for session %q: %v", routing.SessionID, err)
+	}
 }
 
 // ─── tasks/sendSubscribe (streaming SSE) ─────────────────────────────────────
@@ -289,6 +325,11 @@ func (s *a2aServer) tasksSendSubscribe(w http.ResponseWriter, r *http.Request, r
 	var p taskSendParams
 	if err := json.Unmarshal(req.Params, &p); err != nil || p.ID == "" {
 		writeRPCErr(w, req.ID, -32602, "invalid params: id required")
+		return
+	}
+	routing, err := s.resolveRouting(p.Metadata, p.ID)
+	if err != nil {
+		writeRPCErr(w, req.ID, -32602, "invalid params: "+err.Error())
 		return
 	}
 
@@ -308,7 +349,12 @@ func (s *a2aServer) tasksSendSubscribe(w http.ResponseWriter, r *http.Request, r
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	rec := s.newRecord(p.ID, p.SessionID, p.Message, cancel)
+	rec := s.newRecord(p.ID, routing.SessionID, p.Message, cancel)
+
+	if routing.Persistent && s.runGuard != nil {
+		release := s.runGuard.acquire(routing.SessionID)
+		defer release()
+	}
 
 	emitSSE := func(event string, data any) {
 		b, _ := json.Marshal(data)
@@ -318,7 +364,7 @@ func (s *a2aServer) tasksSendSubscribe(w http.ResponseWriter, r *http.Request, r
 
 	emitSSE("task_status_update", a2aStatusEvent(p.ID, a2aStateWorking, nil, false))
 
-	sq := s.manager.LookupSquad("", toolkitagent.DefaultSquadName)
+	sq := s.manager.LookupSquad("", routing.Squad)
 	if sq == nil || sq.Runner == nil {
 		msg := "agent not available"
 		emitSSE("task_status_update", a2aStatusEvent(p.ID, a2aStateFailed, &msg, true))
@@ -329,8 +375,9 @@ func (s *a2aServer) tasksSendSubscribe(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 
-	seq := sq.Runner.Run(ctx, defaultUserID, rec.adkSessionID(),
-		&genai.Content{Role: "user", Parts: []*genai.Part{{Text: a2aMessageText(p.Message)}}},
+	promptText := a2aMessageText(p.Message)
+	seq := sq.Runner.Run(ctx, routing.UserID, routing.SessionID,
+		&genai.Content{Role: "user", Parts: []*genai.Part{{Text: promptText}}},
 		adkagent.RunConfig{StreamingMode: adkagent.StreamingModeSSE})
 
 	type adkEvt struct {
@@ -358,8 +405,9 @@ func (s *a2aServer) tasksSendSubscribe(w http.ResponseWriter, r *http.Request, r
 		rec.mu.Lock()
 		rec.task.Status.State = state
 		rec.task.Status.Timestamp = nowRFC3339()
+		var result string
 		if state == a2aStateCompleted {
-			result := respBuf.String()
+			result = respBuf.String()
 			rec.task.Artifacts = []a2aArtifact{{
 				Parts:     []a2aPart{{Type: "text", Text: result}},
 				Index:     0,
@@ -373,6 +421,9 @@ func (s *a2aServer) tasksSendSubscribe(w http.ResponseWriter, r *http.Request, r
 		rec.mu.Unlock()
 		emitSSE("task_status_update", a2aStatusEvent(p.ID, state, errMsg, true))
 		close(rec.doneCh)
+		if routing.Persistent && state == a2aStateCompleted {
+			s.persistA2ATurn(routing, promptText, result)
+		}
 	}
 
 	for {
@@ -473,13 +524,13 @@ func (s *a2aServer) tasksCancel(w http.ResponseWriter, r *http.Request, req rpcR
 
 // ─── agent runner ─────────────────────────────────────────────────────────────
 
-func (s *a2aServer) runAgent(ctx context.Context, sessionID, taskID, prompt string) (string, error) {
-	sq := s.manager.LookupSquad("", toolkitagent.DefaultSquadName)
+func (s *a2aServer) runAgent(ctx context.Context, squad, userID, sessionID, taskID, prompt string) (string, error) {
+	sq := s.manager.LookupSquad("", squad)
 	if sq == nil || sq.Runner == nil {
 		return "", fmt.Errorf("agent not available")
 	}
 
-	seq := sq.Runner.Run(ctx, defaultUserID, sessionID,
+	seq := sq.Runner.Run(ctx, userID, sessionID,
 		&genai.Content{Role: "user", Parts: []*genai.Part{{Text: prompt}}},
 		adkagent.RunConfig{StreamingMode: adkagent.StreamingModeSSE})
 
@@ -571,6 +622,89 @@ func (s *a2aServer) getRecord(id string) *taskRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.records[id]
+}
+
+// metaString pulls a string-valued key out of the JSON-RPC metadata map.
+// Returns "" when missing, not-a-string, or whitespace-only.
+func metaString(meta map[string]any, key string) string {
+	if meta == nil {
+		return ""
+	}
+	v, ok := meta[key]
+	if !ok {
+		return ""
+	}
+	s, _ := v.(string)
+	return strings.TrimSpace(s)
+}
+
+// sessionRouting captures the resolved target for one A2A call: which squad
+// to invoke, which ADK session/user IDs to address, and whether the session
+// is a real persisted web UI session (vs. an ephemeral A2A-only one).
+type sessionRouting struct {
+	Squad      string
+	UserID     string
+	SessionID  string
+	Meta       *SessionMeta // non-nil when targeting a registered session
+	Persistent bool         // true when the call should persist + lock
+}
+
+// routingError is a typed rejection that the caller maps to a -32602.
+type routingError struct{ msg string }
+
+func (e *routingError) Error() string { return e.msg }
+
+// resolveRouting picks squad + session for one A2A call. Empty / missing
+// session_name → ephemeral session (task ID + defaultUserID + chosen squad).
+// Non-empty session_name → lookup in the registry; conflict on squad
+// rejected. Returns *routingError when the caller's request can't be
+// satisfied without misleading them.
+func (s *a2aServer) resolveRouting(meta map[string]any, taskID string) (*sessionRouting, error) {
+	wantSquad := metaString(meta, "squad")
+	wantSession := metaString(meta, "session_name")
+
+	// Ephemeral path: no named session.
+	if wantSession == "" {
+		squad := wantSquad
+		if squad == "" {
+			squad = toolkitagent.DefaultSquadName
+		} else if s.manager != nil && !s.manager.HasSquad(squad) {
+			return nil, &routingError{fmt.Sprintf("unknown squad %q", squad)}
+		}
+		return &sessionRouting{
+			Squad:     squad,
+			UserID:    defaultUserID,
+			SessionID: taskID,
+		}, nil
+	}
+
+	// Persistent path: look up the session in the web UI registry.
+	if s.registry == nil {
+		return nil, &routingError{"session_name routing not available on this server"}
+	}
+	sm, ok := s.registry.Get(wantSession)
+	if !ok {
+		return nil, &routingError{fmt.Sprintf("unknown session %q", wantSession)}
+	}
+	squad := sm.Squad
+	if squad == "" {
+		squad = toolkitagent.DefaultSquadName
+	}
+	// A caller-supplied squad must match the session's pinned squad. Silently
+	// switching to the session's squad would mislead them; silently honouring
+	// the caller would split-brain the session.
+	if wantSquad != "" && !strings.EqualFold(wantSquad, squad) {
+		return nil, &routingError{fmt.Sprintf(
+			"session %q is pinned to squad %q; cannot retarget to %q",
+			wantSession, squad, wantSquad)}
+	}
+	return &sessionRouting{
+		Squad:      squad,
+		UserID:     sm.UserID,
+		SessionID:  sm.ID,
+		Meta:       sm,
+		Persistent: true,
+	}, nil
 }
 
 func a2aMessageText(msg a2aMessage) string {

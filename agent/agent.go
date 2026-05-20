@@ -522,6 +522,7 @@ func buildA2AInstruction(agents []a2a.Agent) string {
 	sb.WriteString("IMPORTANT — routing rules:\n")
 	sb.WriteString("- To talk to a remote A2A agent listed below, you MUST call its `a2a_*` tool. Do NOT use `teammate_tell`, `teammate_ask`, or any other mailbox tool for these — those are for in-process session mailboxes between yoke sub-agents in this same process, which is a completely different protocol.\n")
 	sb.WriteString("- When the user names one of the agents below (e.g. \"ask the X agent\", \"have new-agent do Y\", \"say hello to the a2a agent foo\"), route to its `a2a_*` tool.\n")
+	sb.WriteString("- When the user names a specific REMOTE session (e.g. \"the session called teaching-kite\", \"new-agent's session foo\"), pass that name through as the `session_name` argument to the tool. Without `session_name` the call is stateless and the remote has no memory of prior turns; with it the call targets an existing named conversation on the remote and preserves history. Do NOT guess a session name — use only what the user gave you.\n")
 	sb.WriteString("- The tool returns the remote agent's reply as text. Surface that reply to the user; do not paraphrase unless asked.\n\n")
 	sb.WriteString("Available peers:\n")
 	for _, a := range agents {
