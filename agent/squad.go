@@ -218,7 +218,8 @@ func buildSquadInstance(
 
 	// ── Plugins (one set per squad — bound to this squad's leader LLM) ──
 	suffix := func(u, s string) string { return infra.SessionSuffix(u, s) }
-	plugins, pluginCloser, err := buildPlugins(runtime, opts, infra.Bus, orchestratorLLM, suffix, infra.BuildTimestamp)
+	asker := NewAskUserPermissionAsker(infra.AskUserRegistry)
+	plugins, pluginCloser, err := buildPlugins(runtime, opts, infra.Bus, orchestratorLLM, suffix, infra.BuildTimestamp, asker)
 	if err != nil {
 		for _, h := range allMCPHandles {
 			infra.MCPPool.Release(h)

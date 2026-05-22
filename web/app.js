@@ -1118,7 +1118,11 @@ function renderAskUserWidget(sessionId, q) {
 
   const promptEl = document.createElement("div");
   promptEl.className = "ask-user-prompt";
-  promptEl.textContent = q.prompt;
+  if (typeof marked !== "undefined" && typeof marked.parse === "function") {
+    promptEl.innerHTML = marked.parse(q.prompt || "");
+  } else {
+    promptEl.textContent = q.prompt;
+  }
   card.appendChild(promptEl);
 
   const kind = q.kind;

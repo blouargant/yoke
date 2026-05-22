@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,6 +35,7 @@ func buildPlugins(
 	orchestratorLLM model.LLM,
 	suffix func(userID, sessionID string) string,
 	buildTimestamp string,
+	asker permissions.Asker,
 ) (plugins []*plugin.Plugin, closer func() error, err error) {
 	logsDir := paths.LogsDir()
 	if err := os.MkdirAll(logsDir, 0o755); err != nil {
@@ -58,7 +60,9 @@ func buildPlugins(
 	} {
 		loggerSubs = append(loggerSubs, bus.Subscribe(ev, logger))
 	}
+	permsCtx, cancelPerms := context.WithCancel(context.Background())
 	closer = func() error {
+		cancelPerms()
 		for _, sub := range loggerSubs {
 			sub.Off()
 		}
@@ -71,7 +75,7 @@ func buildPlugins(
 	if eventsPlugin, err := bus.PluginWithOptions("events", events.PluginOptions{IncludeModelRequest: opts.DebugLogging}); err == nil {
 		plugins = append(plugins, eventsPlugin)
 	}
-	if perms, err := buildPermissionsPlugin(runtime); err == nil {
+	if perms, err := buildPermissionsPlugin(permsCtx, runtime, asker, bus); err == nil {
 		plugins = append(plugins, perms)
 	}
 	if _, cp, err := cache.Plugin("cache"); err == nil {
@@ -99,25 +103,26 @@ func buildPlugins(
 	return plugins, closer, nil
 }
 
-// buildPermissionsPlugin loads the base permissions config, then scans every
-// agent's skills directory for per-skill permissions.json overlays and merges
-// them together. Skill rules are appended after base rules so the base config
-// always takes precedence within each tier.
-func buildPermissionsPlugin(runtime RuntimeSettings) (*plugin.Plugin, error) {
-	base, err := permissions.Load(runtime.PermissionsConfigPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Load permissions.json overlays from skill directories in the registry.
-	// Each agent lists the skills it uses; we aggregate all distinct skills.
+// buildPermissionsPlugin wires the permissions plugin with three rule
+// sources:
+//
+//  1. the base file at runtime.PermissionsConfigPath (project config),
+//  2. the user-owned overlay at $HOME/.yoke/config/permissions.json
+//     where "Allow in this project" / "Allow always" persistence lands,
+//  3. an in-memory skill overlay aggregated from each agent's skills.
+//
+// A Reloader polls (1) and (2) for changes and atomically swaps the
+// merged rule set, so external edits and persisted approvals propagate
+// to every running session without restarting the server. ctx cancels
+// the polling loop on generation teardown.
+func buildPermissionsPlugin(ctx context.Context, runtime RuntimeSettings, asker permissions.Asker, bus *events.Bus) (*plugin.Plugin, error) {
+	// Skill overlays (in-memory; do not need to be polled).
 	registryDir := paths.SkillsRegistryDir()
 	seen := map[string]bool{}
-	var overlays []*permissions.Rules
+	var skillOverlays []*permissions.Rules
 	for _, agentCfg := range runtime.Agents {
 		skillNames := agentCfg.Skills
 		if len(skillNames) == 0 {
-			// No explicit list — scan all installed skills.
 			entries, _ := os.ReadDir(registryDir)
 			for _, e := range entries {
 				if e.IsDir() {
@@ -131,13 +136,44 @@ func buildPermissionsPlugin(runtime RuntimeSettings) (*plugin.Plugin, error) {
 				continue
 			}
 			seen[permPath] = true
-			r, err := permissions.Load(permPath)
-			if err == nil && r.HasRules() {
-				overlays = append(overlays, r)
+			r, lerr := permissions.Load(permPath)
+			if lerr == nil && r.HasRules() {
+				skillOverlays = append(skillOverlays, r)
 			}
 		}
 	}
 
-	merged := permissions.Merge(base, overlays...)
-	return permissions.NewPluginFromRules("perms", merged, permissions.StdinAsker{})
+	userConfigPath := filepath.Join(paths.ConfigWriteDir(), "permissions.json")
+	// Only treat the user overlay as a polled file when it's a separate
+	// path from the base — otherwise we'd be reloading the same file twice.
+	var overlayPaths []string
+	if userConfigPath != runtime.PermissionsConfigPath {
+		overlayPaths = append(overlayPaths, userConfigPath)
+	}
+
+	reloader := permissions.NewReloader(runtime.PermissionsConfigPath, overlayPaths, skillOverlays)
+	reloader.Start(ctx)
+
+	if asker == nil {
+		asker = permissions.StdinAsker{}
+	}
+	plug, cleaner, err := permissions.NewPluginFromConfig(permissions.PluginConfig{
+		Name:           "perms",
+		Source:         reloader,
+		Asker:          asker,
+		UserConfigPath: userConfigPath,
+		OnPersist:      func() { _ = reloader.Refresh() },
+		Debug:          os.Getenv("YOKE_DEBUG") != "",
+	})
+	if err == nil && cleaner != nil && bus != nil {
+		sub := bus.Subscribe(events.EventSessionEnd, func(_ string, payload map[string]any) {
+			sid, _ := payload["session_id"].(string)
+			if sid != "" {
+				cleaner.Forget(sid)
+			}
+		})
+		// Detach on ctx cancel so a hot-reload tears down the subscription.
+		go func() { <-ctx.Done(); sub.Off() }()
+	}
+	return plug, err
 }
