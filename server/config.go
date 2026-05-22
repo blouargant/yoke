@@ -50,15 +50,10 @@ type ServerConfig struct {
 }
 
 // agentSourceLayer returns the config-chain layer ("local", "user", or "system")
-// where the named agent's definition file (agent.json) was found.
+// where the named agent's definition file (agent.json) was found. Delegates to
+// paths.AgentSourceLayer.
 func agentSourceLayer(name string) string {
-	for _, dir := range paths.AgentsRegistrySearchDirs() {
-		if _, err := os.Stat(filepath.Join(dir, name, "agent.json")); err == nil {
-			absDir, _ := filepath.Abs(dir)
-			return pathLayer(absDir)
-		}
-	}
-	return ""
+	return paths.AgentSourceLayer(name)
 }
 
 // loadServerConfig reads config/server.yaml from the config search chain.
@@ -132,17 +127,33 @@ func (c configFiles) path(name string) (string, bool) {
 	return paths.FindConfig(filename), true
 }
 
-// writePath returns the **write** target for a whitelisted name. Writes
-// always land under paths.ConfigWriteDir() ($YOKE_HOME/config) regardless
-// of where the file currently resides, so a user edit on a config
-// originally shipped under /etc/yoke or ./config creates a per-user
-// override that subsequent reads pick up (file-level layering).
+// writePath returns the **write** target for a whitelisted name without
+// considering layer promotion — used by callers that don't have the parsed
+// content available. The layer is the source layer of the current file
+// (forks /etc/yoke → $YOKE_HOME). For content-aware promotion (agents.json
+// referencing local-only skills/agents), use writePathFor.
 func (c configFiles) writePath(name string) (string, bool) {
+	return c.writePathFor(name, nil)
+}
+
+// writePathFor returns the **write** target for a whitelisted name with
+// content-aware layer selection. When name=="agent", the body is parsed and
+// any reference to a local-only agent or skill promotes the write into the
+// local layer. For other whitelisted names, the source layer of the file is
+// preserved (system → user fork).
+func (c configFiles) writePathFor(name string, body []byte) (string, bool) {
 	filename, ok := configFileNames[name]
 	if !ok {
 		return "", false
 	}
-	return filepath.Join(paths.ConfigWriteDir(), filename), true
+	readPath, _ := c.path(name)
+	var layer string
+	if name == "agent" {
+		layer = resolveAgentsConfigLayer(readPath, body)
+	} else {
+		layer = resolveSourceLayer(readPath)
+	}
+	return filepath.Join(paths.WriteDirForLayer(layer), filename), true
 }
 
 // configFileNames maps the editor's whitelisted short names to the
@@ -356,7 +367,6 @@ func registerConfigRoutes(rg *gin.RouterGroup, files configFiles, restart *resta
 			c.JSON(http.StatusNotFound, gin.H{"error": "unknown config file"})
 			return
 		}
-		writePath, _ := files.writePath(c.Param("name"))
 		var req configWriteRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
@@ -372,6 +382,7 @@ func registerConfigRoutes(rg *gin.RouterGroup, files configFiles, restart *resta
 				return
 			}
 		}
+		writePath, _ := files.writePathFor(c.Param("name"), []byte(req.Content))
 		// After the first fork the write target is authoritative; before
 		// it the read source is. effectiveMtimePath picks the right one
 		// so GET and PUT always agree on which file's mtime to track.
@@ -646,26 +657,26 @@ func registerConfigRoutes(rg *gin.RouterGroup, files configFiles, restart *resta
 					agents := make([]any, 0, len(settings.Agents))
 					for _, a := range settings.Agents {
 						agents = append(agents, map[string]any{
-							"name":                   a.Name,
-							"description":            a.Description,
-							"enabled":                a.Enabled,
-							"leader":                 a.Leader,
-							"builtin":                a.BuiltIn,
-							"source":                 agentSourceLayer(a.Name),
-							"model_ref":              a.ModelRef,
-							"provider":               a.Provider,
-							"model":                  a.Model,
-							"base_url":               a.BaseURL,
-							"api_key":                a.APIKey,
-							"tools":                  a.Tools,
-							"skills":                 a.Skills,
-							"softskills_dir":         a.SoftSkillsDir,
-							"allow_file_attachments": a.AllowFileAttachments,
-							"mcp_config_path":        a.MCPConfigPath,
-							"mcp_servers":            a.MCPServers,
+							"name":                    a.Name,
+							"description":             a.Description,
+							"enabled":                 a.Enabled,
+							"leader":                  a.Leader,
+							"builtin":                 a.BuiltIn,
+							"source":                  agentSourceLayer(a.Name),
+							"model_ref":               a.ModelRef,
+							"provider":                a.Provider,
+							"model":                   a.Model,
+							"base_url":                a.BaseURL,
+							"api_key":                 a.APIKey,
+							"tools":                   a.Tools,
+							"skills":                  a.Skills,
+							"softskills_dir":          a.SoftSkillsDir,
+							"allow_file_attachments":  a.AllowFileAttachments,
+							"mcp_config_path":         a.MCPConfigPath,
+							"mcp_servers":             a.MCPServers,
 							"permissions_config_path": a.PermissionsConfigPath,
-							"a2a_agents":             a.A2AAgents,
-							"instruction":            agent.ReadAgentInstruction(a.Name),
+							"a2a_agents":              a.A2AAgents,
+							"instruction":             agent.ReadAgentInstruction(a.Name),
 						})
 					}
 					// Sort agents: built-in first, then custom
@@ -719,7 +730,6 @@ func registerConfigRoutes(rg *gin.RouterGroup, files configFiles, restart *resta
 			c.JSON(http.StatusNotFound, gin.H{"error": "unknown config file"})
 			return
 		}
-		writePath, _ := files.writePath(name)
 		var req struct {
 			Data  any        `json:"data"`
 			MTime *time.Time `json:"mtime,omitempty"`
@@ -729,13 +739,15 @@ func registerConfigRoutes(rg *gin.RouterGroup, files configFiles, restart *resta
 			return
 		}
 
+		// Track which layers we wrote per-agent files into so we can sweep
+		// orphans from each layer after the agents list shrinks.
+		touchedAgentLayers := map[string]bool{}
+
 		// Special handling for agent config: extract agents and write them
 		// to registry/agents/{name}/agent.json instead of inline.
 		if name == "agent" {
 			if m, ok := req.Data.(map[string]any); ok {
 				if agentsList, ok := m["agents"].([]any); ok {
-					// Extract agents from the request and write them to the registry
-					agentsRegistry := paths.AgentsRegistryWriteDir()
 					agentNames := make([]string, 0, len(agentsList))
 
 					for _, item := range agentsList {
@@ -748,7 +760,22 @@ func registerConfigRoutes(rg *gin.RouterGroup, files configFiles, restart *resta
 							continue
 						}
 
-						// Write the agent to registry/agents/{name}/agent.json
+						// Collect declared skills for layer promotion: a custom
+						// agent that references a local-only skill must itself
+						// be written into the local layer.
+						var declaredSkills []string
+						if rawSkills, ok := agentMap["skills"].([]any); ok {
+							for _, s := range rawSkills {
+								if sn, ok := s.(string); ok && sn != "" {
+									declaredSkills = append(declaredSkills, sn)
+								}
+							}
+						}
+						layer := agentTargetLayer(agentName, declaredSkills)
+						touchedAgentLayers[layer] = true
+						agentsRegistry := paths.AgentsRegistryWriteDirForLayer(layer)
+
+						// Write the agent to <registry>/{name}/agent.json
 						agentDir := filepath.Join(agentsRegistry, agentName)
 						if err := os.MkdirAll(agentDir, 0o755); err != nil {
 							c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("mkdir registry agent: %v", err)})
@@ -804,20 +831,28 @@ func registerConfigRoutes(rg *gin.RouterGroup, files configFiles, restart *resta
 					// Update the main config to reference agents by name only
 					m["agents"] = agentNames
 
-					// Delete write-registry dirs for agents that are no longer in
-					// the list. Only the write dir is touched — dirs that also
-					// exist in other registry layers (built-ins under
-					// ./registry/agents/) are untouched there.
+					// Sweep orphan agent dirs from every write layer we touched
+					// (and the default user layer). Built-ins under /etc/yoke
+					// or non-write read-only locations are never deleted.
 					agentSet := make(map[string]bool, len(agentNames))
 					for _, n := range agentNames {
 						agentSet[n] = true
 					}
-					if entries, err := os.ReadDir(agentsRegistry); err == nil {
+					sweepLayers := map[string]bool{"user": true}
+					for l := range touchedAgentLayers {
+						sweepLayers[l] = true
+					}
+					for layer := range sweepLayers {
+						dir := paths.AgentsRegistryWriteDirForLayer(layer)
+						entries, err := os.ReadDir(dir)
+						if err != nil {
+							continue
+						}
 						for _, entry := range entries {
 							if !entry.IsDir() || agentSet[entry.Name()] {
 								continue
 							}
-							_ = os.RemoveAll(filepath.Join(agentsRegistry, entry.Name()))
+							_ = os.RemoveAll(filepath.Join(dir, entry.Name()))
 						}
 					}
 				}
@@ -830,6 +865,9 @@ func registerConfigRoutes(rg *gin.RouterGroup, files configFiles, restart *resta
 			return
 		}
 		out = append(out, '\n')
+		// Resolve the write target with the body in hand so a top-level
+		// agents.json that references local-only elements lands in `.agents/`.
+		writePath, _ := files.writePathFor(name, out)
 		if status, body := checkMtime(effectiveMtimePath(readPath, writePath), req.MTime); status != 0 {
 			c.JSON(status, body)
 			return

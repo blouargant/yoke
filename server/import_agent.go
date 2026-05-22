@@ -14,8 +14,14 @@ import (
 
 // registerImportAgentRoute mounts POST /import on rg.
 func registerImportAgentRoute(rg *gin.RouterGroup) {
-	agentsRegistryDir := paths.AgentsRegistryWriteDir()
-	agentsConfigWrite := filepath.Join(paths.ConfigWriteDir(), "agents.json")
+	// Imports follow the layer where agents.json already lives — local when
+	// a project-local .agents/ has agents.json, user otherwise.
+	importLayer := func() string {
+		if paths.Layer(paths.FindConfig("agents.json")) == "local" {
+			return "local"
+		}
+		return "user"
+	}
 	agentsConfigRead := func() string {
 		p, _ := filepath.Abs(paths.FindConfig("agents.json"))
 		return p
@@ -40,6 +46,9 @@ func registerImportAgentRoute(rg *gin.RouterGroup) {
 			return
 		}
 
+		layer := importLayer()
+		agentsRegistryDir := paths.AgentsRegistryWriteDirForLayer(layer)
+		agentsConfigWrite := filepath.Join(paths.WriteDirForLayer(layer), "agents.json")
 		if err := os.MkdirAll(agentsRegistryDir, 0o755); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return

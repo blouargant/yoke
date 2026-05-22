@@ -37,9 +37,9 @@ yoke (`leader`, `skill_editor`, `registries_crawler`, `summariser`,
 `curator`); the Web UI displays them under a **Built-in Agents**
 section, separate from user-added **Custom Agents**.
 
-The registry directory follows the same three-layer lookup described below:
-`.agents/registry/agents`, `$HOME/.yoke/registry/agents`, then
-`/etc/yoke/registry/agents`.
+The registry directory follows the same lookup described below:
+`.agents/registry/agents` (and `agents/registry/agents` when present),
+`$HOME/.yoke/registry/agents`, then `/etc/yoke/registry/agents`.
 
 ## Read root (config search chain)
 
@@ -47,20 +47,30 @@ Config files are resolved through a **three-layer chain**, high → low
 precedence. **Whichever layer has a given file wins for that whole file** —
 this is a file-level override, not a deep merge.
 
-1. `.agents/` — project-local directory (CWD-relative, highest priority).
+1. `.agents/` (canonical) and/or `agents/` (dotless alias) — project-local
+   directories (CWD-relative, highest priority). Both are accepted; when
+   both exist, `.agents/` wins and `agents/` is searched immediately after.
 2. `$HOME/.yoke/` — per-user state root.
 3. `/etc/yoke/registry/` — system-wide install (lowest priority).
 
 Override the chain wholesale with `YOKE_CONFIG_DIRS` (colon-separated). Use
 `YOKE_CONFIG_PATH` to bypass the chain entirely for `agents.json`.
 
-Skills follow the same three-layer lookup against `registry/skills/` subdirectories.
+Skills follow the same lookup against `registry/skills/` subdirectories.
 
 ## Write root (state)
 
-Everything mutable lands under `$HOME/.yoke/` (override with `YOKE_HOME`).
-Config files written by the Web UI editor also land here — a first edit on a
-lower-precedence file forks a per-user override that subsequent reads pick up:
+Runtime state — `logs/`, `uploads/`, `mailboxes/`, `softskills/`, and any
+remote-registry-driven installs into `registry/skills` or `registry/agents` —
+always lands under `$HOME/.yoke/` (override with `YOKE_HOME`).
+
+For user-edited config (Web UI editor + auto-install helpers), writes are
+**layer-aware**: a file that already lives in the project-local layer
+(`.agents/` or `agents/`) stays there on save. `agents.json` is additionally
+**promoted to the local layer** when any of its referenced agents or skills
+only resolves in a local directory, so the post-save config never points at
+files that don't exist outside `.agents/`. Files originally in
+`/etc/yoke/` still fork into `$HOME/.yoke/` (the system layer is read-only).
 
 ```
 $HOME/.yoke/

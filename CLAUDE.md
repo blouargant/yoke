@@ -111,7 +111,7 @@ per-generation hook listening across every squad.
 ### Configuration files
 
 Config files are resolved through a **3-layer search chain** (high → low precedence):
-`.agents/` (project-local) → `$HOME/.yoke/` (per-user) → `/etc/yoke/registry/` (system).
+`.agents/` (or `agents/` as a dotless alias; both participate when both exist, `.agents/` first) → `$HOME/.yoke/` (per-user) → `/etc/yoke/registry/` (system).
 
 | File | Purpose |
 |---|---|
@@ -145,8 +145,9 @@ by the user omit the flag. The web UI groups them under separate
 **Built-in** and **Custom** sections in the agents list.
 
 The registry directory uses the same 3-layer lookup as config files:
-`.agents/registry/agents`, `$HOME/.yoke/registry/agents`, then
-`/etc/yoke/registry/agents` — first existing directory wins.
+`.agents/registry/agents` (and `agents/registry/agents` when that alias dir
+exists), `$HOME/.yoke/registry/agents`, then `/etc/yoke/registry/agents` —
+first existing directory wins.
 
 ### Filesystem layout
 
@@ -156,16 +157,25 @@ Two roots, resolved by [internal/paths/paths.go](internal/paths/paths.go):
   Whichever layer has a given file wins for that whole file (file-level
   override, not deep merge):
 
-  1. `.agents/` — project-local directory (CWD-relative, highest priority)
+  1. `.agents/` (canonical) and/or `agents/` (dotless alias) — project-local
+     directories (CWD-relative, highest priority). Both are accepted; when
+     both exist, `.agents/` wins and `agents/` is searched right after.
   2. `$HOME/.yoke/` — per-user state root
   3. `/etc/yoke/registry/` — system-wide install (lowest priority)
 
   Override the chain via `YOKE_CONFIG_DIRS` (colon-separated; replaces
   the chain wholesale).
 
-- **Write root for state**: always `$HOME/.yoke/` (override via `YOKE_HOME`).
-  Every mutable file the agent produces lands here, never beside the
-  CWD where the binary was started:
+- **Write root for state**: `$HOME/.yoke/` by default (override via `YOKE_HOME`).
+  Agent runtime state (logs, mailboxes, softskills, registry installs) always
+  lands here. For user-edited config (the web UI editor + the auto-install
+  helpers), yoke is **layer-aware**: when the edited file or any of its
+  references already lives in the project-local `.agents/` (or `agents/`)
+  layer, the save is routed back to that layer so a local-only project
+  never grows orphaned references under `$HOME/.yoke/`. Files originally
+  in `/etc/yoke` still fork into `$HOME/.yoke/` on first edit (the system
+  layer is read-only). Other state files (logs, mailboxes, softskills)
+  remain anchored under `$HOME/.yoke/` regardless of layer:
 
   ```
   $HOME/.yoke/
@@ -181,14 +191,17 @@ Two roots, resolved by [internal/paths/paths.go](internal/paths/paths.go):
       └── agents/       # web UI installed agents (override via YOKE_AGENTS_REGISTRY_DIR)
   ```
 
-  The web UI editor reads from the search chain but **always writes to
-  `$HOME/.yoke/`** — a first edit on a lower-precedence file forks a
-  per-user override that subsequent reads pick up.
+  The web UI editor reads from the search chain and writes to the same
+  layer the source file lives in — local files stay local, user files
+  stay user, and system files fork to user. For `agents.json` specifically,
+  saves are promoted to the **local** layer when the file references any
+  agent or skill that only resolves in `.agents/` (or `agents/`), so
+  every reference remains satisfied after the write.
 
-  The skill registry (`registry/skills/`) follows the same 3-layer lookup
-  as agent definitions — first existing directory in
-  `.agents/registry/skills`, `$HOME/.yoke/registry/skills`,
-  `/etc/yoke/registry/skills` wins.
+  The skill registry (`registry/skills/`) follows the same lookup as
+  agent definitions: `.agents/registry/skills` (and `agents/registry/skills`
+  when present), `$HOME/.yoke/registry/skills`, `/etc/yoke/registry/skills`
+  — first existing directory wins.
 
 ### Configuration precedence
 

@@ -246,14 +246,14 @@ func TestPersistA2ATurn_PushesSSE(t *testing.T) {
 
 func TestValidSessionName(t *testing.T) {
 	cases := map[string]bool{
-		"teaching-kite":    true,
-		"plain-fox-1":      true,
-		"abc":              true,
-		"":                 false,
-		"WithUpper":        false,
-		"with space":       false,
-		"with/slash":       false,
-		"with_underscore":  false, // underscore is intentionally excluded
+		"teaching-kite":         true,
+		"plain-fox-1":           true,
+		"abc":                   true,
+		"":                      false,
+		"WithUpper":             false,
+		"with space":            false,
+		"with/slash":            false,
+		"with_underscore":       false, // underscore is intentionally excluded
 		strings.Repeat("a", 81): false,
 	}
 	for name, want := range cases {

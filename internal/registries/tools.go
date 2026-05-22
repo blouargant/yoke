@@ -152,8 +152,8 @@ type linkSkillToAgentIn struct {
 }
 
 type linkSkillToAgentOut struct {
-	Linked        bool   `json:"linked"`           // true when a new symlink was created
-	AlreadyLinked bool   `json:"already_linked"`   // true when an equivalent symlink already existed
+	Linked        bool   `json:"linked"`         // true when a new symlink was created
+	AlreadyLinked bool   `json:"already_linked"` // true when an equivalent symlink already existed
 	SkillName     string `json:"skill_name"`
 	AgentName     string `json:"agent_name"`
 }

@@ -1,8 +1,14 @@
 # Configuration reference
 
 Runtime configuration is resolved through a **3-layer search chain**:
-`.agents/` (project-local) → `$HOME/.yoke/` (per-user) → `/etc/yoke/registry/` (system).
-Each layer can hold any config file; the first existing file wins (file-level override, not merge).
+`.agents/` (or `agents/` as a dotless alias; both participate when both
+exist, `.agents/` first) → `$HOME/.yoke/` (per-user) →
+`/etc/yoke/registry/` (system).
+Each layer can hold any config file; the first existing file wins (file-level
+override, not merge). User-edited config is **layer-aware** on save: edits to
+a file that lives in (or whose content references resources from) the local
+layer are routed back to that local layer instead of forking into
+`$HOME/.yoke/`.
 
 Precedence for overlapping values is:
 
@@ -120,7 +126,8 @@ Common fields:
 the agent falls back to `registry/agents/default.md`.
 
 The registry directory uses the same 3-layer lookup as config files:
-`.agents/registry/agents`, `$HOME/.yoke/registry/agents`, then
+`.agents/registry/agents` (and `agents/registry/agents` when that alias
+directory exists), `$HOME/.yoke/registry/agents`, then
 `/etc/yoke/registry/agents`. First existing directory wins.
 
 The web UI Settings → Agent panel exposes both files: agent fields in

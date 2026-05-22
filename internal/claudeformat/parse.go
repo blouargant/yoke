@@ -20,12 +20,12 @@
 //     keyed by name:
 //
 //     {
-//       "code-reviewer": {
-//         "description": "…",
-//         "prompt": "…",
-//         "tools": ["Read", "Grep"],
-//         "model": "sonnet"
-//       }
+//     "code-reviewer": {
+//     "description": "…",
+//     "prompt": "…",
+//     "tools": ["Read", "Grep"],
+//     "model": "sonnet"
+//     }
 //     }
 //
 //  3. JSON object with a "name" field — a single agent as a plain object.

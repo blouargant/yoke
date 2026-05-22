@@ -11,7 +11,7 @@ import (
 // value (promptString or pickString). It is stored in Config.Inputs at install time.
 type MCPInput struct {
 	ID          string   `yaml:"id"`
-	Type        string   `yaml:"type"`        // "promptString" (default) or "pickString"
+	Type        string   `yaml:"type"` // "promptString" (default) or "pickString"
 	Description string   `yaml:"description"`
 	Password    bool     `yaml:"password"`
 	Options     []string `yaml:"options"` // for pickString

@@ -229,14 +229,14 @@ func appendAgentToConfig(readPath, writePath, name string) (bool, error) {
 // agentsRoutesDeps bundles the resolved paths required by the agents-side
 // remote registry routes. Built once at server startup.
 type agentsRoutesDeps struct {
-	AgentsRegistryDir       string        // abs $YOKE_HOME/registry/agents (or env-override)
-	RemoteRegistriesWrite   string        // abs $YOKE_HOME/config/remote_registries.json
-	RemoteRegistriesRead    func() string // re-resolves the 3-layer chain on each request
-	AgentsConfigRead        func() string // re-resolves config/agents.json read path
-	AgentsConfigWrite       string        // abs $YOKE_HOME/config/agents.json
-	SkillsRegistryReadDir   string        // abs path to skills registry for dependency resolution
-	SkillsRegistryWriteDir  string        // abs write target for auto-installed skills
-	MCPConfigRead           func() string // re-resolves mcp_config.json read path
+	AgentsRegistryDir      string        // abs $YOKE_HOME/registry/agents (or env-override)
+	RemoteRegistriesWrite  string        // abs $YOKE_HOME/config/remote_registries.json
+	RemoteRegistriesRead   func() string // re-resolves the 3-layer chain on each request
+	AgentsConfigRead       func() string // re-resolves config/agents.json read path
+	AgentsConfigWrite      string        // abs $YOKE_HOME/config/agents.json
+	SkillsRegistryReadDir  string        // abs path to skills registry for dependency resolution
+	SkillsRegistryWriteDir string        // abs write target for auto-installed skills
+	MCPConfigRead          func() string // re-resolves mcp_config.json read path
 }
 
 // resolveAgentsRoutesDeps mirrors resolveSkillsDeps for the agents side.

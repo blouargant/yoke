@@ -17,7 +17,6 @@ import (
 	"github.com/blouargant/yoke/internal/registries"
 )
 
-
 // registerRemoteMCPRegistryRoutes mounts /remotes endpoints scoped to "mcp" kind.
 // Shares the backing remote_registries.json with the skills and agents tabs.
 //

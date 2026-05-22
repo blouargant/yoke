@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/blouargant/yoke/internal/paths"
 	"github.com/blouargant/yoke/internal/registries"
 )
 
@@ -116,8 +117,14 @@ func tryAutoInstallAgents(agentNames []string, agentsRegistryDir string, agentsC
 				if ag.Name == agentName {
 					if mkErr := os.MkdirAll(agentsRegistryDir, 0o755); mkErr == nil {
 						if _, instErr := registries.InstallAgent(ref, reg.Token, ag.DirPath, agentsRegistryDir); instErr == nil {
-							// Ignore enable error — agent is installed even if config append fails.
-							_, _ = appendAgentToConfig(agentsConfigRead(), agentsConfigWrite, agentName)
+							// If the install target sits under .agents/, route
+							// the agents.json edit there too — otherwise we'd
+							// reference a local-only agent from $HOME/.yoke.
+							configWrite := agentsConfigWrite
+							if paths.Layer(agentsRegistryDir) == "local" {
+								configWrite = filepath.Join(paths.LocalWriteDir(), "agents.json")
+							}
+							_, _ = appendAgentToConfig(agentsConfigRead(), configWrite, agentName)
 							installed = append(installed, agentName)
 							found = true
 						}

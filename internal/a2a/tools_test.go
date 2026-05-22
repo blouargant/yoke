@@ -52,13 +52,13 @@ func TestNewTools_SkipsEmptyURL(t *testing.T) {
 
 func TestSanitizeToolName(t *testing.T) {
 	cases := map[string]string{
-		"new-agent":     "new-agent",       // hyphens preserved
-		"already_ok":    "already_ok",      // underscores preserved
-		"with.dots":     "with_dots",       // dots collapsed
-		"spaces in it":  "spaces_in_it",    // spaces collapsed
-		"weird/path[1]": "weird_path_1_",   // slashes/brackets collapsed
-		"  trim  ":      "trim",            // outer whitespace trimmed
-		"αβγ":           "_",               // non-ASCII collapsed
+		"new-agent":     "new-agent",     // hyphens preserved
+		"already_ok":    "already_ok",    // underscores preserved
+		"with.dots":     "with_dots",     // dots collapsed
+		"spaces in it":  "spaces_in_it",  // spaces collapsed
+		"weird/path[1]": "weird_path_1_", // slashes/brackets collapsed
+		"  trim  ":      "trim",          // outer whitespace trimmed
+		"αβγ":           "_",             // non-ASCII collapsed
 	}
 	for in, want := range cases {
 		if got := SanitizeToolName(in); got != want {
@@ -95,4 +95,3 @@ func TestLoad_ResolvesAgentName(t *testing.T) {
 		t.Fatalf("agent.URL=%q", agent.URL)
 	}
 }
-

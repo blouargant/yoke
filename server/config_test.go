@@ -260,6 +260,138 @@ func TestParsedRoundTrip(t *testing.T) {
 	}
 }
 
+// localProjectSetup chdirs into a fresh temp dir, creates a project-local
+// configuration directory there (.agents/ or agents/, per dirName), and pins
+// $YOKE_HOME at a separate temp so the editor's read/write resolution can
+// pick between the two layers. Returns (projectRoot, localDir, home).
+func localProjectSetup(t *testing.T, dirName string) (string, string, string) {
+	t.Helper()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj := t.TempDir()
+	if err := os.Chdir(proj); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	local := filepath.Join(proj, dirName)
+	if err := os.MkdirAll(local, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	t.Setenv("YOKE_HOME", home)
+	t.Setenv("YOKE_CONFIG_DIRS", "")
+	return proj, local, home
+}
+
+// seedLocalSkill creates a skill at <localDir>/skills/<name>/SKILL.md so it is
+// resolvable only from the local layer.
+func seedLocalSkill(t *testing.T, localDir, name string) {
+	t.Helper()
+	dir := filepath.Join(localDir, "skills", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "---\nname: " + name + "\ndescription: test skill\n---\n# " + name + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLayerAwareWrite_AgentsConfigLocalOnlySkill(t *testing.T) {
+	for _, dirName := range []string{".agents", "agents"} {
+		t.Run(dirName, func(t *testing.T) {
+			_, local, home := localProjectSetup(t, dirName)
+			seedLocalSkill(t, local, "local-skill")
+			// Seed a custom agent under the local registry that references the
+			// local-only skill. The web UI editor branch loads the agent's
+			// declared skills via paths.AgentsRegistrySearchDirs.
+			agentDir := filepath.Join(local, "registry/agents/custom-agent")
+			if err := os.MkdirAll(agentDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			agentBody := `{"name":"custom-agent","skills":["local-skill"]}` + "\n"
+			if err := os.WriteFile(filepath.Join(agentDir, "agent.json"), []byte(agentBody), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			r := newTestEngine(t, editorFiles())
+			req := map[string]any{
+				"content": `{"agents":["custom-agent"]}` + "\n",
+			}
+			w := do(t, r, http.MethodPut, "/api/config/file/agent", req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("put: %d %s", w.Code, w.Body.String())
+			}
+			// Local-layer save expected.
+			localPath := filepath.Join(local, "agents.json")
+			if _, err := os.Stat(localPath); err != nil {
+				t.Fatalf("expected %s, stat err=%v", localPath, err)
+			}
+			// $YOKE_HOME must remain untouched.
+			if _, err := os.Stat(filepath.Join(home, "agents.json")); err == nil {
+				t.Fatalf("user-layer agents.json should not exist")
+			}
+		})
+	}
+}
+
+func TestLayerAwareWrite_NoLocalRefStaysOnUser(t *testing.T) {
+	_, local, home := localProjectSetup(t, ".agents")
+	// No skill, no agent — empty local dir, so any save should still target user.
+	_ = local
+
+	r := newTestEngine(t, editorFiles())
+	w := do(t, r, http.MethodPut, "/api/config/file/agent", map[string]any{
+		"content": `{"agents":["leader"]}` + "\n",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("put: %d %s", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, "agents.json")); err != nil {
+		t.Fatalf("expected user-layer save, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(local, "agents.json")); err == nil {
+		t.Fatalf("local agents.json should not exist (no local-only refs)")
+	}
+}
+
+func TestLayerAwareWrite_ParsedAgentRoutesPerAgent(t *testing.T) {
+	_, local, home := localProjectSetup(t, ".agents")
+	seedLocalSkill(t, local, "local-skill")
+
+	r := newTestEngine(t, editorFiles())
+	// PUT a parsed agents.json with one custom agent that references the local skill.
+	w := do(t, r, http.MethodPut, "/api/config/parsed/agent", map[string]any{
+		"data": map[string]any{
+			"agents": []any{
+				map[string]any{
+					"name":        "new-agent",
+					"description": "uses local skill",
+					"skills":      []any{"local-skill"},
+				},
+			},
+		},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("put parsed: %d %s", w.Code, w.Body.String())
+	}
+	// The per-agent agent.json must land in the local registry.
+	wantAgent := filepath.Join(local, "registry/agents/new-agent/agent.json")
+	if _, err := os.Stat(wantAgent); err != nil {
+		t.Fatalf("expected %s, stat err=%v", wantAgent, err)
+	}
+	// And so should the top-level agents.json.
+	if _, err := os.Stat(filepath.Join(local, "agents.json")); err != nil {
+		t.Fatalf("expected local agents.json, stat err=%v", err)
+	}
+	// The user-layer registry must not contain the agent.
+	if _, err := os.Stat(filepath.Join(home, "registry/agents/new-agent/agent.json")); err == nil {
+		t.Fatalf("user-layer registry should not have the local-promoted agent")
+	}
+}
+
 func TestRestartEndpoint(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()

@@ -118,16 +118,16 @@ type RuntimeAgentConfig struct {
 	Tools                             []string
 	// Skills is the explicit list of skill names this agent can access from
 	// the shared registry. Nil/empty means all installed skills are visible.
-	Skills                []string
-	SoftSkillsDir         string
-	MCPConfigPath         string
+	Skills        []string
+	SoftSkillsDir string
+	MCPConfigPath string
 	// MCPServers is the per-agent whitelist of MCP server names (matching
 	// `name` fields in the resolved mcp_config.json). An empty / unset list
 	// means the agent gets NO MCP servers — opt-in is explicit.
 	MCPServers            []string
 	PermissionsConfigPath string
 	// A2AAgents is the per-agent list of A2A agent names this agent can reach.
-	A2AAgents             []string
+	A2AAgents []string
 }
 
 // RuntimeSquadConfig is one normalized squad: a named group composed of an
@@ -161,8 +161,8 @@ type RuntimeSettings struct {
 	// A2A agent endpoints that any agent's `a2a_agents` list can reference.
 	A2AConfigPath string
 	SerpAPIKey    string
-	Models                  map[string]RuntimeModelConfig
-	Agents                  []RuntimeAgentConfig
+	Models        map[string]RuntimeModelConfig
+	Agents        []RuntimeAgentConfig
 	// Squads is the normalised list of named agent groups. Always contains
 	// at least one entry named DefaultSquadName.
 	Squads []RuntimeSquadConfig

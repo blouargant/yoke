@@ -186,17 +186,10 @@ type skillInfo struct {
 
 // pathLayer returns "local", "user", or "system" based on where dirPath sits
 // in the config search chain. Used to label skills and agents in the web UI.
+// Delegates to paths.Layer so both `.agents/` and `agents/` are recognised as
+// local.
 func pathLayer(dirPath string) string {
-	absPath, _ := filepath.Abs(dirPath)
-	localAbs, _ := filepath.Abs(paths.LocalDir)
-	homeAbs := paths.Home()
-	if absPath == localAbs || strings.HasPrefix(absPath, localAbs+string(filepath.Separator)) {
-		return "local"
-	}
-	if absPath == homeAbs || strings.HasPrefix(absPath, homeAbs+string(filepath.Separator)) {
-		return "user"
-	}
-	return "system"
+	return paths.Layer(dirPath)
 }
 
 // listRegistrySkills scans all dirs in precedence order and returns merged

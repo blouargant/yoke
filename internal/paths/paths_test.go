@@ -129,6 +129,9 @@ func TestStateDirsUnderHome(t *testing.T) {
 func TestAgentsRegistrySearchDirs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("YOKE_HOME", home)
+	// Run from a clean CWD so the project's own .agents/ directory doesn't
+	// participate in the chain.
+	chdirTemp(t)
 	dirs := AgentsRegistrySearchDirs()
 	if len(dirs) != 3 {
 		t.Fatalf("AgentsRegistrySearchDirs() len = %d, want 3", len(dirs))
@@ -142,5 +145,156 @@ func TestAgentsRegistrySearchDirs(t *testing.T) {
 	wantSystem := filepath.Join(SystemConfigDir, "registry/agents")
 	if dirs[2] != wantSystem {
 		t.Errorf("third layer = %q, want %q", dirs[2], wantSystem)
+	}
+}
+
+// chdirTemp moves the process into a fresh temp dir for the duration of t.
+// Restores the original CWD on cleanup. Used by tests that probe local-dir
+// behaviour and don't want the project's own .agents/ to leak into results.
+func chdirTemp(t *testing.T) string {
+	t.Helper()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := t.TempDir()
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	return tmp
+}
+
+func TestLocalDirsNoneExistsFallback(t *testing.T) {
+	chdirTemp(t)
+	got := LocalDirs()
+	if len(got) != 1 || got[0] != LocalDir {
+		t.Fatalf("LocalDirs() = %v, want [%q]", got, LocalDir)
+	}
+	if w := LocalWriteDir(); w != LocalDir {
+		t.Fatalf("LocalWriteDir() = %q, want %q", w, LocalDir)
+	}
+}
+
+func TestLocalDirsOnlyCanonical(t *testing.T) {
+	tmp := chdirTemp(t)
+	if err := os.Mkdir(filepath.Join(tmp, LocalDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := LocalDirs()
+	if len(got) != 1 || got[0] != LocalDir {
+		t.Fatalf("LocalDirs() = %v, want [%q]", got, LocalDir)
+	}
+}
+
+func TestLocalDirsOnlyAlias(t *testing.T) {
+	tmp := chdirTemp(t)
+	if err := os.Mkdir(filepath.Join(tmp, LocalDirAlias), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := LocalDirs()
+	if len(got) != 1 || got[0] != LocalDirAlias {
+		t.Fatalf("LocalDirs() = %v, want [%q]", got, LocalDirAlias)
+	}
+	if w := LocalWriteDir(); w != LocalDirAlias {
+		t.Fatalf("LocalWriteDir() = %q, want %q", w, LocalDirAlias)
+	}
+}
+
+func TestLocalDirsBothPresent(t *testing.T) {
+	tmp := chdirTemp(t)
+	if err := os.Mkdir(filepath.Join(tmp, LocalDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(tmp, LocalDirAlias), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := LocalDirs()
+	if len(got) != 2 || got[0] != LocalDir || got[1] != LocalDirAlias {
+		t.Fatalf("LocalDirs() = %v, want [%q %q]", got, LocalDir, LocalDirAlias)
+	}
+	if w := LocalWriteDir(); w != LocalDir {
+		t.Fatalf("LocalWriteDir() = %q, want %q", w, LocalDir)
+	}
+}
+
+func TestConfigSearchDirsIncludesBothLocalDirs(t *testing.T) {
+	tmp := chdirTemp(t)
+	if err := os.Mkdir(filepath.Join(tmp, LocalDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(tmp, LocalDirAlias), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	t.Setenv("YOKE_HOME", home)
+	t.Setenv("YOKE_CONFIG_DIRS", "")
+	dirs := ConfigSearchDirs()
+	if len(dirs) != 4 {
+		t.Fatalf("ConfigSearchDirs() = %v, want 4 entries", dirs)
+	}
+	if dirs[0] != LocalDir || dirs[1] != LocalDirAlias {
+		t.Errorf("local layers = %v, want [%q %q]", dirs[:2], LocalDir, LocalDirAlias)
+	}
+	if dirs[2] != home {
+		t.Errorf("user layer = %q, want %q", dirs[2], home)
+	}
+	if dirs[3] != filepath.Join(SystemConfigDir, "registry") {
+		t.Errorf("system layer = %q, want %q", dirs[3], filepath.Join(SystemConfigDir, "registry"))
+	}
+}
+
+func TestWriteDirForLayer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("YOKE_HOME", home)
+	tmp := chdirTemp(t)
+	if err := os.Mkdir(filepath.Join(tmp, LocalDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := WriteDirForLayer("local"); got != LocalDir {
+		t.Errorf("local: got %q, want %q", got, LocalDir)
+	}
+	if got := WriteDirForLayer("user"); got != home {
+		t.Errorf("user: got %q, want %q", got, home)
+	}
+	// "system" falls back to user — yoke never writes /etc/yoke.
+	if got := WriteDirForLayer("system"); got != home {
+		t.Errorf("system: got %q, want %q", got, home)
+	}
+	// AgentsRegistryWriteDirForLayer/SkillsRegistryWriteDirForLayer.
+	if got := AgentsRegistryWriteDirForLayer("local"); got != filepath.Join(LocalDir, "registry/agents") {
+		t.Errorf("agents/local: got %q", got)
+	}
+	if got := SkillsRegistryWriteDirForLayer("local"); got != filepath.Join(LocalDir, "registry/skills") {
+		t.Errorf("skills/local: got %q", got)
+	}
+	if got := AgentsRegistryWriteDirForLayer("user"); got != filepath.Join(home, "registry/agents") {
+		t.Errorf("agents/user: got %q", got)
+	}
+}
+
+func TestLayerClassifiesPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("YOKE_HOME", home)
+	tmp := chdirTemp(t)
+	localAbs := filepath.Join(tmp, LocalDir)
+	if err := os.MkdirAll(filepath.Join(localAbs, "registry/agents/foo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := Layer(filepath.Join(localAbs, "registry/agents/foo/agent.json")); got != "local" {
+		t.Errorf(".agents/ path: got %q, want local", got)
+	}
+	aliasAbs := filepath.Join(tmp, LocalDirAlias)
+	if err := os.MkdirAll(aliasAbs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := Layer(filepath.Join(aliasAbs, "agents.json")); got != "local" {
+		t.Errorf("agents/ path: got %q, want local", got)
+	}
+	if got := Layer(filepath.Join(home, "agents.json")); got != "user" {
+		t.Errorf("home path: got %q, want user", got)
+	}
+	if got := Layer("/etc/yoke/registry/agents.json"); got != "system" {
+		t.Errorf("system path: got %q, want system", got)
 	}
 }

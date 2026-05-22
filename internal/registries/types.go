@@ -97,8 +97,8 @@ type A2AAgentInfo struct {
 // AgentInfo is one agent returned when browsing a remote registry.
 type AgentInfo struct {
 	Name        string   `json:"name"`
-	DirPath     string   `json:"dir_path"`          // path relative to registry root, e.g. "research/web_agent"
-	Group       string   `json:"group,omitempty"`   // intermediate dirs before the agent dir
+	DirPath     string   `json:"dir_path"`        // path relative to registry root, e.g. "research/web_agent"
+	Group       string   `json:"group,omitempty"` // intermediate dirs before the agent dir
 	Description string   `json:"description,omitempty"`
 	Builtin     bool     `json:"builtin,omitempty"`
 	Tags        []string `json:"tags,omitempty"`

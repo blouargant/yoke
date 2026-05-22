@@ -314,7 +314,10 @@ func buildRegistriesDeps(runtime RuntimeSettings) registries.Deps {
 			return agentSkills
 		},
 		AddSkillToAgent: func(agentName, skillName string) error {
-			_, err := registries.AddSkillToAgent(paths.AgentsRegistryDir(), paths.AgentsRegistryWriteDir(), agentName, skillName)
+			// Preserve the agent's source layer so a local-layer agent doesn't
+			// get forked into $HOME/.yoke/ just because a skill was attached.
+			writeDir := paths.AgentsRegistryWriteDirForLayer(layerForAgent(agentName))
+			_, err := registries.AddSkillToAgent(paths.AgentsRegistryDir(), writeDir, agentName, skillName)
 			return err
 		},
 
@@ -408,7 +411,7 @@ func buildRegistriesDeps(runtime RuntimeSettings) registries.Deps {
 			if err != nil {
 				return "", false, fmt.Errorf("marshal mcp_config.json: %w", err)
 			}
-			writePath := filepath.Join(paths.ConfigWriteDir(), "mcp_config.json")
+			writePath := filepath.Join(paths.WriteDirForLayer(layerForConfigFile("mcp_config.json")), "mcp_config.json")
 			if err := os.MkdirAll(filepath.Dir(writePath), 0o755); err != nil {
 				return "", false, err
 			}
@@ -416,7 +419,12 @@ func buildRegistriesDeps(runtime RuntimeSettings) registries.Deps {
 		},
 
 		InstallAgent: func(ref registries.RepoRef, token, dirPath string, enable bool) (string, bool, error) {
-			agentsDir := paths.AgentsRegistryWriteDir()
+			// $YOKE_AGENTS_REGISTRY_DIR is an explicit operator override and
+			// always wins. Otherwise the install follows the layer where the
+			// project's agents.json already lives (or user when there is no
+			// project-local one).
+			layer := layerForConfigFile("agents.json")
+			agentsDir := paths.AgentsRegistryWriteDirForLayer(layer)
 			if v := strings.TrimSpace(os.Getenv("YOKE_AGENTS_REGISTRY_DIR")); v != "" {
 				agentsDir = v
 			}
@@ -430,7 +438,7 @@ func buildRegistriesDeps(runtime RuntimeSettings) registries.Deps {
 			enabled := false
 			if enable {
 				enabled, _ = appendAgentNameToConfig(paths.FindConfig("agents.json"),
-					filepath.Join(paths.ConfigWriteDir(), "agents.json"), agentName)
+					filepath.Join(paths.WriteDirForLayer(layer), "agents.json"), agentName)
 			}
 			return agentName, enabled, nil
 		},
@@ -495,7 +503,7 @@ func buildRegistriesDeps(runtime RuntimeSettings) registries.Deps {
 			if err != nil {
 				return "", false, fmt.Errorf("encode agents.json: %w", err)
 			}
-			writePath := filepath.Join(paths.ConfigWriteDir(), "agents.json")
+			writePath := filepath.Join(paths.WriteDirForLayer(layerForConfigFile("agents.json")), "agents.json")
 			if err := os.MkdirAll(filepath.Dir(writePath), 0o755); err != nil {
 				return "", false, err
 			}
@@ -536,13 +544,33 @@ func buildRegistriesDeps(runtime RuntimeSettings) registries.Deps {
 			if err != nil {
 				return "", false, fmt.Errorf("marshal a2a_config.json: %w", err)
 			}
-			writePath := filepath.Join(paths.ConfigWriteDir(), "a2a_config.json")
+			writePath := filepath.Join(paths.WriteDirForLayer(layerForConfigFile("a2a_config.json")), "a2a_config.json")
 			if err := os.MkdirAll(filepath.Dir(writePath), 0o755); err != nil {
 				return "", false, err
 			}
 			return agentName, !already, os.WriteFile(writePath, append(out, '\n'), 0o644)
 		},
 	}
+}
+
+// layerForConfigFile returns the layer where the named config file currently
+// resides. Files that live under /etc/yoke (or that don't yet exist) fork
+// into "user" — yoke never writes back into the system layer.
+func layerForConfigFile(filename string) string {
+	p := paths.FindConfig(filename)
+	if paths.Layer(p) == "local" {
+		return "local"
+	}
+	return "user"
+}
+
+// layerForAgent returns the layer where the named agent's agent.json lives,
+// or "user" when the agent has no existing definition.
+func layerForAgent(name string) string {
+	if l := paths.AgentSourceLayer(name); l == "local" {
+		return "local"
+	}
+	return "user"
 }
 
 // appendAgentNameToConfig appends name to the `agents` list in agents.json

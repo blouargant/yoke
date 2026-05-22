@@ -143,7 +143,7 @@ func buildPermissionsPlugin(ctx context.Context, runtime RuntimeSettings, asker 
 		}
 	}
 
-	userConfigPath := filepath.Join(paths.ConfigWriteDir(), "permissions.json")
+	userConfigPath := filepath.Join(paths.WriteDirForLayer(layerForConfigFile("permissions.json")), "permissions.json")
 	// Only treat the user overlay as a polled file when it's a separate
 	// path from the base — otherwise we'd be reloading the same file twice.
 	var overlayPaths []string

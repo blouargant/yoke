@@ -16,8 +16,8 @@ import (
 // implementation works on every filesystem (NFS, virtio-fs, etc.) with
 // no extra dependencies.
 type Reloader struct {
-	basePath     string
-	overlayPaths []string
+	basePath       string
+	overlayPaths   []string
 	staticOverlays []*Rules // appended after files
 
 	interval time.Duration
