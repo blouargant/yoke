@@ -17,9 +17,12 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,13 +35,14 @@ import (
 
 	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/model"
-	"google.golang.org/adk/runner"
 	"google.golang.org/genai"
 
 	toolkitagent "github.com/blouargant/yoke/agent"
 	"github.com/blouargant/yoke/core/events"
 	"github.com/blouargant/yoke/core/llm"
 	"github.com/blouargant/yoke/internal/askuser"
+	"github.com/blouargant/yoke/internal/paths"
+	"github.com/blouargant/yoke/internal/sessions"
 )
 
 var oscColorResponseRE = regexp.MustCompile(`(?:^|\s)(?:1|10|11);rgb:[0-9A-Fa-f]+/[0-9A-Fa-f]+/[0-9A-Fa-f]+(?:\s|$)`)
@@ -180,13 +184,39 @@ func newChatTextView(changed func()) *tview.TextView {
 
 // Config bundles everything the TUI needs to run.
 type Config struct {
-	Runner                     *runner.Runner
-	Bus                        *events.Bus       // optional; if non-nil, trace pane subscribes
-	AskUserRegistry            *askuser.Registry // optional; if non-nil, renders ask_user modals
-	UserID                     string
-	SessionID                  string
-	AppName                    string // shown in title bar
-	SubAgentNames              []string
+	// Manager owns the live agent generations. The TUI picks the runner
+	// for a session via Manager.LookupSquad(sessionID, squadName).
+	Manager *toolkitagent.Manager
+	// Sessions is the multi-session registry the sidebar lists.
+	Sessions *sessions.Registry
+	// Bus is the shared event bus; the trace pane subscribes to it when
+	// non-nil.
+	Bus *events.Bus
+	// AskUserRegistry receives ask_user tool questions; the TUI renders a
+	// modal per question filtered to the active session.
+	AskUserRegistry *askuser.Registry
+	// UserID is the default user identifier used for new sessions and for
+	// mailbox watchers.
+	UserID string
+	// AppName is shown in the title bar.
+	AppName string
+	// SubAgentNames lists sub-agent names so the chat pane can render
+	// sub-agent live activity with a distinct prefix.
+	SubAgentNames []string
+	// RegisterSession / UnregisterSession update the cross-session
+	// mailbox registry when a session is created or deleted. Forwarded
+	// from agent.Infrastructure. Nil-safe.
+	RegisterSession   func(userID, sessionID, displayName string) error
+	UnregisterSession func(displayName string) error
+	// WatchMailbox starts a background goroutine that surfaces mailbox
+	// pushes for one session. Nil-safe; when nil the TUI simply skips
+	// mailbox notifications.
+	WatchMailbox func(ctx context.Context, userID, sessionID string, onMessage func(from, body string))
+	// AgentOptions are the Options used to build the initial Instance.
+	// The hot-reload key (Ctrl-R) hands them back to Manager.Reload so a
+	// new generation is built from the latest on-disk config.
+	AgentOptions toolkitagent.Options
+
 	InputTokenPricePerMillion  float64
 	OutputTokenPricePerMillion float64
 	// CachedInputTokenPricePerMillion is applied to prompt tokens served
@@ -200,17 +230,25 @@ type Config struct {
 	CacheCreationTokenPricePerMillion float64
 }
 
+// sessionState is the TUI's view of the active session. The pointer is
+// swapped atomically when the user switches sessions so concurrent
+// goroutines (event handlers, mailbox watchers) read a consistent snapshot.
+type sessionState struct {
+	ID    string
+	Squad string
+}
+
 // Run starts the TUI event loop and blocks until the user quits or ctx
 // is cancelled.
 func Run(ctx context.Context, cfg Config) error {
-	if cfg.Runner == nil {
-		return fmt.Errorf("tui: Runner required")
+	if cfg.Manager == nil {
+		return fmt.Errorf("tui: Manager required")
+	}
+	if cfg.Sessions == nil {
+		return fmt.Errorf("tui: Sessions registry required")
 	}
 	if cfg.UserID == "" {
-		cfg.UserID = "user"
-	}
-	if cfg.SessionID == "" {
-		cfg.SessionID = fmt.Sprintf("tui-%d", time.Now().Unix())
+		cfg.UserID = sessions.DefaultUserID
 	}
 	if cfg.AppName == "" {
 		cfg.AppName = "yoke"
@@ -223,6 +261,16 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		subAgentSet[n] = struct{}{}
 	}
+
+	// Pick the initial session: most-recently-created persisted session,
+	// or a fresh one on the default squad when no sessions exist yet.
+	var current atomic.Pointer[sessionState]
+	initial := pickInitialSession(cfg)
+	current.Store(initial)
+	if cfg.RegisterSession != nil {
+		_ = cfg.RegisterSession(cfg.UserID, initial.ID, initial.ID)
+	}
+	cfg.Manager.Pin(initial.ID)
 
 	app := tview.NewApplication()
 	markdown := &markdownRenderer{}
@@ -248,7 +296,7 @@ func Run(ctx context.Context, cfg Config) error {
 
 	// Slash-command autocomplete: suggest matching commands when the
 	// user starts typing "/".
-	slashCommands := []string{"/help", "/compress", "/create-skill", "/create-skill ", "/update-skill ", "/learn", "/learn-now", "/learn-now ", "/learn ", "/status"}
+	slashCommands := []string{"/help", "/compress", "/create-skill", "/create-skill ", "/update-skill ", "/learn", "/learn-now", "/learn-now ", "/learn ", "/status", "/upload ", "/new"}
 	slashCommandsDisplay := []string{
 		"/help",
 		"/compress",
@@ -260,6 +308,8 @@ func Run(ctx context.Context, cfg Config) error {
 		"/learn-now <reason>",
 		"/learn <reason>",
 		"/status",
+		"/upload <path>",
+		"/new",
 	}
 	input.SetAutocompleteFunc(func(currentText string) []string {
 		trimmed := strings.TrimLeft(currentText, " ")
@@ -294,6 +344,20 @@ func Run(ctx context.Context, cfg Config) error {
 		AddItem(chat, 0, 1, false).
 		AddItem(input, 3, 0, true)
 
+	// ── Sessions sidebar ────────────────────────────────────────────────
+	sessionsPane := tview.NewList().
+		ShowSecondaryText(true).
+		SetHighlightFullLine(true).
+		SetSelectedTextColor(tcell.ColorBlack).
+		SetSelectedBackgroundColor(tcell.ColorYellow)
+	sessionsPane.SetBorder(true).SetTitle(" Sessions ").SetTitleAlign(tview.AlignLeft)
+
+	// sessionIDsInPane mirrors what's currently rendered in sessionsPane so
+	// we can map a list index back to a session ID (the List API doesn't
+	// surface item user-data unless we set it explicitly, which would
+	// require a tview version bump). Index aligns with sessionsPane.
+	var sessionIDsInPane []string
+
 	// ── Left pane: trace ────────────────────────────────────────────────
 	trace := tview.NewTextView().
 		SetDynamicColors(true).
@@ -302,46 +366,122 @@ func Run(ctx context.Context, cfg Config) error {
 	trace.SetBorder(true).SetTitle(" Trace ").SetTitleAlign(tview.AlignLeft)
 	trace.SetChangedFunc(func() { app.Draw() })
 
-	// Focus cycling: Tab / Shift-Tab rotates focus among input → chat → trace
-	// so the user can scroll either panel with arrow keys / Page Up / Page Down.
-	// Esc returns focus to the input field; Ctrl-C always quits.
-	focusList := []tview.Primitive{input, chat, trace}
+	// Focus cycling: Tab / Shift-Tab rotates focus among input → chat →
+	// sessions → trace so the user can scroll any panel with arrow keys /
+	// Page Up / Page Down. Esc returns focus to the input field; Ctrl-C
+	// always quits.
+	focusList := []tview.Primitive{input, chat, sessionsPane, trace}
 	focusIdx := 0
 	setFocus := func(idx int) {
 		focusIdx = idx
 		chat.SetBorderColor(tcell.ColorDefault)
 		trace.SetBorderColor(tcell.ColorDefault)
+		sessionsPane.SetBorderColor(tcell.ColorDefault)
 		switch idx {
 		case 1: // chat
 			chat.SetBorderColor(tcell.ColorYellow)
-		case 2: // trace
+		case 2: // sessions
+			sessionsPane.SetBorderColor(tcell.ColorYellow)
+		case 3: // trace
 			trace.SetBorderColor(tcell.ColorYellow)
 		}
 		app.SetFocus(focusList[idx])
 	}
 
-	// ── Status bar ──────────────────────────────────────────────────────
+	// ── Status bar + per-session token counters ─────────────────────────
+	//
+	// The web UI tracks token usage independently per chat tab; mirror that
+	// here by keying counters off the session ID. EventAfterModel runs on
+	// the event bus goroutine, so we guard the map with a mutex. The
+	// running counters survive session switches (they live in memory for
+	// the life of the TUI) so the user can hop between chats without
+	// losing the totals.
 	status := tview.NewTextView().
 		SetDynamicColors(true).
 		SetTextAlign(tview.AlignLeft)
 	var appRunning atomic.Bool
-	var inputTokensTotal atomic.Int64
-	var cachedInputTokensTotal atomic.Int64
-	var cacheCreationTokensTotal atomic.Int64
-	var outputTokensTotal atomic.Int64
+	type sessionTokens struct {
+		input, cached, cacheCreate, output int64
+	}
+	tokenStore := make(map[string]*sessionTokens)
+	var tokenMu sync.Mutex
+	// billingSession overrides the current-session lookup while a model
+	// call is in flight, so token events that arrive after the user has
+	// switched sessions still credit the session that issued the turn.
+	var billingSession atomic.Pointer[string]
+	tokensFor := func(id string) *sessionTokens {
+		tokenMu.Lock()
+		defer tokenMu.Unlock()
+		t := tokenStore[id]
+		if t == nil {
+			t = &sessionTokens{}
+			tokenStore[id] = t
+		}
+		return t
+	}
+	currentTokens := func() (in, cached, cacheCreate, out int64) {
+		cur := current.Load()
+		if cur == nil {
+			return
+		}
+		t := tokensFor(cur.ID)
+		tokenMu.Lock()
+		defer tokenMu.Unlock()
+		return t.input, t.cached, t.cacheCreate, t.output
+	}
+	addTokens := func(in, cached, cacheCreate, out int64) {
+		var id string
+		if bid := billingSession.Load(); bid != nil {
+			id = *bid
+		} else if cur := current.Load(); cur != nil {
+			id = cur.ID
+		} else {
+			return
+		}
+		t := tokensFor(id)
+		tokenMu.Lock()
+		t.input += in
+		t.cached += cached
+		t.cacheCreate += cacheCreate
+		t.output += out
+		tokenMu.Unlock()
+	}
 	setStatus := func() {
-		status.SetText(buildStatusText(cfg,
-			inputTokensTotal.Load(),
-			cachedInputTokensTotal.Load(),
-			cacheCreationTokensTotal.Load(),
-			outputTokensTotal.Load()))
+		cur := current.Load()
+		sid, squad := "", ""
+		if cur != nil {
+			sid = cur.ID
+			squad = cur.Squad
+		}
+		in, cached, cacheCreate, out := currentTokens()
+		status.SetText(buildStatusText(cfg, sid, squad, in, cached, cacheCreate, out))
 	}
 	setStatus()
 
 	// ── Root layout ─────────────────────────────────────────────────────
+	// Sessions sidebar | Chat+Input | Trace (hidden by default). The
+	// trace pane is opt-in via Ctrl-T because most users don't need
+	// per-tool-call diagnostics and the chat pane benefits from the
+	// extra width.
 	main := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(trace, 36, 0, false).
+		AddItem(sessionsPane, 28, 0, false).
 		AddItem(rightPane, 0, 1, true)
+	traceVisible := false
+	setTraceVisible := func(show bool) {
+		if show == traceVisible {
+			return
+		}
+		traceVisible = show
+		if show {
+			main.AddItem(trace, 40, 0, false)
+		} else {
+			main.RemoveItem(trace)
+			// If trace had focus when hidden, fall back to the input pane.
+			if focusIdx == 3 {
+				setFocus(0)
+			}
+		}
+	}
 
 	baseFlex := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(status, 1, 0, false).
@@ -492,10 +632,7 @@ func Run(ctx context.Context, cfg Config) error {
 						cacheCreateTok += int64(d.TokenCount)
 					}
 				}
-				inputTokensTotal.Add(promptTok)
-				cachedInputTokensTotal.Add(cachedTok)
-				cacheCreationTokensTotal.Add(cacheCreateTok)
-				outputTokensTotal.Add(candTok)
+				addTokens(promptTok, cachedTok, cacheCreateTok, candTok)
 				app.QueueUpdateDraw(setStatus)
 			}
 			appendTrace("%s[blue]✓ model[-]", traceIndent(sub))
@@ -522,15 +659,8 @@ func Run(ctx context.Context, cfg Config) error {
 			appendTrace("[yellow]curate now[-]")
 		})
 		cfg.Bus.On(events.EventSessionStart, func(_ string, _ map[string]any) {
-			// Reset cumulative token counters at the start of a real
-			// session. We deliberately DO NOT call QueueUpdateDraw here:
-			// EventSessionStart is emitted before app.Run() begins
-			// draining its update queue, so a draw call would deadlock
-			// the TUI (counters are already zero on launch anyway).
-			inputTokensTotal.Store(0)
-			cachedInputTokensTotal.Store(0)
-			cacheCreationTokensTotal.Store(0)
-			outputTokensTotal.Store(0)
+			// Per-session counters live in tokenStore; the active session
+			// starts at zero on first access. Nothing to reset globally.
 			appendTrace("[yellow]session start[-]")
 		})
 		cfg.Bus.On(events.EventSessionEnd, func(_ string, _ map[string]any) {
@@ -547,8 +677,9 @@ func Run(ctx context.Context, cfg Config) error {
 			if !appRunning.Load() {
 				return
 			}
-			// Only respond to questions for this TUI's session.
-			if q.SessionID != "" && q.SessionID != cfg.SessionID {
+			cur := current.Load()
+			// Only respond to questions for the active session.
+			if q.SessionID != "" && (cur == nil || q.SessionID != cur.ID) {
 				return
 			}
 			app.QueueUpdateDraw(func() {
@@ -602,6 +733,233 @@ func Run(ctx context.Context, cfg Config) error {
 		})
 	}
 
+	// ── Session helpers ─────────────────────────────────────────────────
+	//
+	// All of these mutate UI state and must be called from the tview event
+	// loop goroutine (typically from a key-binding callback or a
+	// QueueUpdateDraw closure). The current session pointer is the single
+	// source of truth: send(), the ask_user filter, and the mailbox
+	// watcher all read it before acting.
+	availableSquads := func() []string {
+		inst := cfg.Manager.Current()
+		if inst == nil {
+			return []string{toolkitagent.DefaultSquadName}
+		}
+		names := inst.SquadNames()
+		if len(names) == 0 {
+			return []string{toolkitagent.DefaultSquadName}
+		}
+		return nameAvailableSquads(names)
+	}
+
+	refreshSessions := func() {
+		// Capture the existing selection so we keep it pointed at the
+		// current session after the list is rebuilt.
+		cur := current.Load()
+		sessionsPane.Clear()
+		sessionIDsInPane = sessionIDsInPane[:0]
+		list := cfg.Sessions.List()
+		selectIdx := 0
+		for i, m := range list {
+			label := m.ID
+			if m.Title != "" {
+				label = m.Title
+			}
+			squad := m.Squad
+			if squad == "" {
+				squad = toolkitagent.DefaultSquadName
+			}
+			secondary := fmt.Sprintf("[gray]%s · %d turn(s) · %s[-]",
+				squad, m.Turns, m.LastUsedAt.Format("01-02 15:04"))
+			sessionsPane.AddItem(label, secondary, 0, nil)
+			sessionIDsInPane = append(sessionIDsInPane, m.ID)
+			if cur != nil && m.ID == cur.ID {
+				selectIdx = i
+			}
+		}
+		if len(sessionIDsInPane) > 0 {
+			sessionsPane.SetCurrentItem(selectIdx)
+		}
+	}
+
+	// chatANSIWriter renders one persisted turn into the chat pane using
+	// the same markdown pipeline as live streaming. Keeps replay visually
+	// consistent with fresh output.
+	renderTurn := func(userText, assistantText string) {
+		fmt.Fprintf(chat, "\n[::b]you[-]\n\n%s\n", tview.Escape(strings.TrimSpace(userText)))
+		fmt.Fprint(chat, "[::b]assistant[-]\n")
+		if strings.TrimSpace(assistantText) == "" {
+			return
+		}
+		w, _, _, _ := chat.GetInnerRect()
+		if w <= 0 {
+			w = 80
+		}
+		out := markdown.render(assistantText, w)
+		fmt.Fprint(chatANSI, out)
+	}
+
+	loadHistory := func(sessionID string) {
+		turns, err := sessions.LoadConversationTurns(sessionID)
+		if err != nil {
+			fmt.Fprintf(chat, "\n[red]load history: %v[-]\n", err)
+			return
+		}
+		for _, t := range turns {
+			renderTurn(t.UserText, t.AssistantText)
+		}
+		chat.ScrollToEnd()
+	}
+
+	switchSession := func(id string) {
+		if id == "" {
+			return
+		}
+		meta, ok := cfg.Sessions.Get(id)
+		if !ok {
+			return
+		}
+		squad := meta.Squad
+		if squad == "" {
+			squad = toolkitagent.DefaultSquadName
+		}
+		cfg.Manager.Pin(id)
+		current.Store(&sessionState{ID: id, Squad: squad})
+		chat.Clear()
+		fmt.Fprintf(chat, "[gray]── session %s · squad %s ──[-]\n", id, squad)
+		loadHistory(id)
+		setStatus()
+		refreshSessions()
+	}
+
+	createSession := func(squad string) {
+		if squad == "" {
+			squad = toolkitagent.DefaultSquadName
+		}
+		meta := cfg.Sessions.New(squad)
+		_ = sessions.SetConversationSquad(meta.ID, squad)
+		if cfg.RegisterSession != nil {
+			_ = cfg.RegisterSession(cfg.UserID, meta.ID, meta.ID)
+		}
+		cfg.Manager.Pin(meta.ID)
+		switchSession(meta.ID)
+	}
+
+	deleteSession := func(id string) {
+		if id == "" {
+			return
+		}
+		meta, ok := cfg.Sessions.Get(id)
+		if !ok {
+			return
+		}
+		display := meta.ID
+		if meta.Title != "" {
+			display = meta.Title
+		}
+		userID := meta.UserID
+		if userID == "" {
+			userID = cfg.UserID
+		}
+		if !cfg.Sessions.Delete(id) {
+			return
+		}
+		if cfg.UnregisterSession != nil {
+			_ = cfg.UnregisterSession(display)
+		}
+		sessions.DeleteSessionLogs(userID, id)
+		cfg.Manager.Release(id)
+		// Pick a follow-up session: prefer the most recent remaining one;
+		// fall back to creating a fresh default-squad session so the chat
+		// pane is never left in a "no current session" state.
+		remaining := cfg.Sessions.List()
+		if len(remaining) > 0 {
+			switchSession(remaining[0].ID)
+		} else {
+			createSession(toolkitagent.DefaultSquadName)
+		}
+	}
+
+	chooseSquadModal := func(onPick func(squad string)) {
+		squads := availableSquads()
+		modal := tview.NewModal().SetText("Select squad for new session:")
+		modal.AddButtons(append(append([]string{}, squads...), "Cancel"))
+		modal.SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+			pages.RemovePage("squad_picker")
+			app.SetFocus(input)
+			setFocus(0)
+			if buttonLabel == "Cancel" || buttonIndex >= len(squads) {
+				return
+			}
+			onPick(squads[buttonIndex])
+		})
+		pages.AddPage("squad_picker", modal, false, true)
+		app.SetFocus(modal)
+	}
+
+	// Wire sidebar key bindings: Enter switches, n/N creates, d/D deletes.
+	sessionsPane.SetSelectedFunc(func(idx int, _, _ string, _ rune) {
+		if idx < 0 || idx >= len(sessionIDsInPane) {
+			return
+		}
+		id := sessionIDsInPane[idx]
+		switchSession(id)
+		setFocus(0)
+	})
+	sessionsPane.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		switch ev.Rune() {
+		case 'n', 'N':
+			chooseSquadModal(func(squad string) { createSession(squad) })
+			return nil
+		case 'd', 'D':
+			idx := sessionsPane.GetCurrentItem()
+			if idx >= 0 && idx < len(sessionIDsInPane) {
+				deleteSession(sessionIDsInPane[idx])
+			}
+			return nil
+		}
+		return ev
+	})
+
+	// ── Mailbox push watcher ────────────────────────────────────────────
+	//
+	// One watcher per active session. We restart it on every session
+	// switch by cancelling the previous context. The infrastructure's
+	// poll loop already handles backoff and termination.
+	var watcherCancel context.CancelFunc
+	startWatcher := func(sessionID string) {
+		if watcherCancel != nil {
+			watcherCancel()
+			watcherCancel = nil
+		}
+		if cfg.WatchMailbox == nil || sessionID == "" {
+			return
+		}
+		wctx, cancel := context.WithCancel(ctx)
+		watcherCancel = cancel
+		go cfg.WatchMailbox(wctx, cfg.UserID, sessionID, func(from, body string) {
+			appendChat("\n[magenta]✉ from %s[-] %s\n", tview.Escape(from), tview.Escape(body))
+		})
+	}
+	startWatcher(initial.ID)
+	// Augment switchSession to restart the watcher when the user moves
+	// between sessions. We rebind the closure rather than wrap it because
+	// the sidebar callbacks captured the original pointer.
+	innerSwitch := switchSession
+	switchSession = func(id string) {
+		innerSwitch(id)
+		startWatcher(id)
+	}
+	// Build the Settings overlay (Skills / Agents tabs) once and reuse
+	// across opens. open() refreshes its data from disk each time so the
+	// list reflects any installs/edits that happened in the background.
+	settings := newSettingsView(app, pages, input, markdown)
+
+	// Populate the sidebar and render the initial session's history.
+	refreshSessions()
+	fmt.Fprintf(chat, "[gray]── session %s · squad %s ──[-]\n", initial.ID, initial.Squad)
+	loadHistory(initial.ID)
+
 	// busy flag prevents overlapping submissions.
 	busy := false
 	// send is declared before handleShortcut so the shortcut handler can call it.
@@ -643,9 +1001,14 @@ func Run(ctx context.Context, cfg Config) error {
 				appendChat("[yellow]Context compression unavailable:[-] event bus not configured.\n")
 				return
 			}
+			cur := current.Load()
+			if cur == nil {
+				appendChat("[yellow]No active session.[-]\n")
+				return
+			}
 			go cfg.Bus.Emit(events.EventCompressNow, map[string]any{
 				"user_id":    cfg.UserID,
-				"session_id": cfg.SessionID,
+				"session_id": cur.ID,
 			})
 			appendChat("[green]Context compression triggered.[-] It will run before the next model call.\n")
 		case "learn":
@@ -654,7 +1017,12 @@ func Run(ctx context.Context, cfg Config) error {
 				reason = "manual /learn request from TUI"
 			}
 			appendChat("\n[::b]assistant[-]\n")
-			msg, err := toolkitagent.RequestCurateSession(cfg.UserID, cfg.SessionID, reason)
+			cur := current.Load()
+			if cur == nil {
+				appendChat("[red]/learn failed:[-] no active session\n")
+				return
+			}
+			msg, err := toolkitagent.RequestCurateSession(cfg.UserID, cur.ID, reason)
 			if err != nil {
 				appendChat("[red]/learn failed:[-] %v\n", err)
 				return
@@ -667,7 +1035,12 @@ func Run(ctx context.Context, cfg Config) error {
 				reason = "manual /learn-now request from TUI"
 			}
 			appendChat("\n[::b]assistant[-]\n")
-			msg, err := toolkitagent.RequestCurateSession(cfg.UserID, cfg.SessionID, reason)
+			cur := current.Load()
+			if cur == nil {
+				appendChat("[red]/learn-now failed:[-] no active session\n")
+				return
+			}
+			msg, err := toolkitagent.RequestCurateSession(cfg.UserID, cur.ID, reason)
 			if err != nil {
 				appendChat("[red]/learn-now failed:[-] %v\n", err)
 				return
@@ -679,19 +1052,50 @@ func Run(ctx context.Context, cfg Config) error {
 			}
 			go cfg.Bus.Emit(events.EventCurateNow, map[string]any{
 				"user_id":    cfg.UserID,
-				"session_id": cfg.SessionID,
+				"session_id": cur.ID,
 			})
 			appendChat("[green]%s[-]\n", msg)
 			appendChat("[green]Triggered curation now.[-] Check trace/logs for curator completion.\n")
 		case "status":
-			requested := toolkitagent.CurateSessionRequestedByIDs(cfg.UserID, cfg.SessionID)
+			cur := current.Load()
 			appendChat("\n[::b]assistant[-]\n")
 			appendChat("Session status:\n")
 			appendChat("  app: [aqua]%s[-]\n", cfg.AppName)
 			appendChat("  user: [aqua]%s[-]\n", cfg.UserID)
-			appendChat("  session: [aqua]%s[-]\n", cfg.SessionID)
+			if cur == nil {
+				appendChat("  session: [yellow]none[-]\n")
+				appendChat("  event_bus_configured: [aqua]%t[-]\n", cfg.Bus != nil)
+				return
+			}
+			requested := toolkitagent.CurateSessionRequestedByIDs(cfg.UserID, cur.ID)
+			squad := cur.Squad
+			if squad == "" {
+				squad = toolkitagent.DefaultSquadName
+			}
+			appendChat("  session: [aqua]%s[-]  squad: [aqua]%s[-]\n", cur.ID, squad)
 			appendChat("  curation_requested: [aqua]%t[-]\n", requested)
 			appendChat("  event_bus_configured: [aqua]%t[-]\n", cfg.Bus != nil)
+		case "upload":
+			arg := strings.TrimSpace(strings.TrimPrefix(line, fields[0]))
+			appendChat("\n[::b]assistant[-]\n")
+			if arg == "" {
+				appendChat("[yellow]Usage:[-] /upload <path>\n")
+				return
+			}
+			cur := current.Load()
+			if cur == nil {
+				appendChat("[red]/upload failed:[-] no active session\n")
+				return
+			}
+			staged, err := stageUploadFile(cur.ID, arg)
+			if err != nil {
+				appendChat("[red]/upload failed:[-] %v\n", err)
+				return
+			}
+			appendChat("[green]uploaded[-] %s\n", staged)
+			appendChat("[gray]Reference it in your next prompt — the agent's fs tools can read it directly.[-]\n")
+		case "new":
+			chooseSquadModal(func(squad string) { createSession(squad) })
 		case "help":
 			appendChat("\n[::b]assistant[-]\n")
 			appendChat("Available shortcuts:\n")
@@ -701,7 +1105,11 @@ func Run(ctx context.Context, cfg Config) error {
 			appendChat("  [aqua]/learn [reason][-]        Mark this session for soft-skill curation.\n")
 			appendChat("  [aqua]/learn-now [reason][-]  Mark and trigger soft-skill curation immediately.\n")
 			appendChat("  [aqua]/status[-]              Show current session and curation status.\n")
+			appendChat("  [aqua]/upload <path>[-]        Stage a file under the current session's uploads dir.\n")
+			appendChat("  [aqua]/new[-]                  Create a new session (squad picker).\n")
 			appendChat("  [aqua]/help[-]                Show this help.\n")
+			appendChat("\nSession sidebar (Tab to focus): [aqua]n[-] new, [aqua]d[-] delete, [aqua]Enter[-] switch.\n")
+			appendChat("Global: [aqua]Ctrl-S[-] settings · [aqua]Ctrl-T[-] toggle trace · [aqua]Ctrl-R[-] hot-reload · [aqua]Ctrl-L[-] clear chat · [aqua]Ctrl-C[-] quit.\n")
 		default:
 			appendChat("\n[::b]assistant[-]\n")
 			appendChat("[yellow]Unknown shortcut:[-] /%s (try /help)\n", cmd)
@@ -728,6 +1136,16 @@ func Run(ctx context.Context, cfg Config) error {
 		if busy {
 			return
 		}
+		cur := current.Load()
+		if cur == nil {
+			appendChat("\n[red]No active session — press 'n' on the Sessions pane to create one.[-]\n")
+			return
+		}
+		squadInst := cfg.Manager.LookupSquad(cur.ID, cur.Squad)
+		if squadInst == nil || squadInst.Runner == nil {
+			appendChat("\n[red]No runner for session %s (squad %s).[-]\n", cur.ID, cur.Squad)
+			return
+		}
 		busy = true
 		input.SetText("")
 		// All UI mutations happen off the main goroutine — calling
@@ -738,20 +1156,34 @@ func Run(ctx context.Context, cfg Config) error {
 				busy = false
 				app.QueueUpdateDraw(func() { setFocus(0) })
 			}()
+			sessionID := cur.ID
+			billingSession.Store(&sessionID)
+			defer billingSession.Store(nil)
 			// Echo the user turn immediately as plain text so the first
 			// submission is visible right away even if markdown rendering
 			// is still warming up.
 			appendChat("\n[::b]you[-]\n\n%s\n", sanitizeInputText(prompt))
 			appendChat("[::b]assistant[-]\n")
-			turnInputStart := inputTokensTotal.Load()
-			turnCachedStart := cachedInputTokensTotal.Load()
-			turnCacheCreateStart := cacheCreationTokensTotal.Load()
-			turnOutputStart := outputTokensTotal.Load()
+			// Snapshot the per-session counters now so the turn-usage line
+			// reports only the delta this turn produced. We snapshot the
+			// session we're about to address, not whichever is "current"
+			// at the moment the deferred fires (matters if the user
+			// switches sessions mid-turn).
+			startTok := tokensFor(sessionID)
+			tokenMu.Lock()
+			turnInputStart := startTok.input
+			turnCachedStart := startTok.cached
+			turnCacheCreateStart := startTok.cacheCreate
+			turnOutputStart := startTok.output
+			tokenMu.Unlock()
 			defer func() {
-				turnInput := inputTokensTotal.Load() - turnInputStart
-				turnCached := cachedInputTokensTotal.Load() - turnCachedStart
-				turnCacheCreate := cacheCreationTokensTotal.Load() - turnCacheCreateStart
-				turnOutput := outputTokensTotal.Load() - turnOutputStart
+				endTok := tokensFor(sessionID)
+				tokenMu.Lock()
+				turnInput := endTok.input - turnInputStart
+				turnCached := endTok.cached - turnCachedStart
+				turnCacheCreate := endTok.cacheCreate - turnCacheCreateStart
+				turnOutput := endTok.output - turnOutputStart
+				tokenMu.Unlock()
 				if turnInput < 0 {
 					turnInput = 0
 				}
@@ -767,14 +1199,16 @@ func Run(ctx context.Context, cfg Config) error {
 				appendChat("%s\n", buildTurnUsageText(cfg, turnInput, turnCached, turnCacheCreate, turnOutput))
 			}()
 
-			seq := cfg.Runner.Run(ctx, cfg.UserID, cfg.SessionID,
+			seq := squadInst.Runner.Run(ctx, cfg.UserID, sessionID,
 				&genai.Content{Role: "user", Parts: []*genai.Part{{Text: prompt}}},
 				adkagent.RunConfig{})
 
 			// Buffer assistant text per turn; flush as rendered markdown
 			// either when a non-text part arrives (tool call/response)
-			// or when the stream completes.
+			// or when the stream completes. Also accumulate the plain
+			// assistant text so we can persist the turn at the end.
 			var mdBuf strings.Builder
+			var assistantText strings.Builder
 			var subAgentStack []string
 			currentSubAgent := func() string {
 				if len(subAgentStack) == 0 {
@@ -797,7 +1231,9 @@ func Run(ctx context.Context, cfg Config) error {
 					}
 					switch {
 					case p.Text != "":
-						mdBuf.WriteString(stripTerminalControlSequences(p.Text))
+						clean := stripTerminalControlSequences(p.Text)
+						mdBuf.WriteString(clean)
+						assistantText.WriteString(clean)
 					case p.FunctionCall != nil:
 						flushMarkdown(&mdBuf, currentSubAgent())
 						if _, ok := subAgentSet[strings.ToLower(strings.TrimSpace(p.FunctionCall.Name))]; ok {
@@ -820,6 +1256,17 @@ func Run(ctx context.Context, cfg Config) error {
 				appendChat("[yellow][::b]--- leaving sub-agent: %s ---[-]\n", subAgentStack[i])
 			}
 			flushMarkdown(&mdBuf, currentSubAgent())
+
+			// Persist the turn to the conversation file and refresh the
+			// sidebar so the LastUsedAt / turn count update.
+			cfg.Sessions.Touch(sessionID)
+			if err := sessions.AppendConversationTurn(sessionID, prompt, assistantText.String()); err != nil {
+				appendChat("[red]persist turn: %v[-]\n", err)
+			}
+			app.QueueUpdateDraw(func() {
+				refreshSessions()
+				setStatus()
+			})
 		}()
 	}
 
@@ -829,8 +1276,34 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	})
 
+	// cycleFocus advances focus by delta (±1) and skips the trace pane
+	// when it's hidden so Tab never lands the user on an invisible pane.
+	cycleFocus := func(delta int) {
+		n := len(focusList)
+		idx := focusIdx
+		for i := 0; i < n; i++ {
+			idx = (idx + delta + n) % n
+			if idx == 3 && !traceVisible {
+				continue
+			}
+			setFocus(idx)
+			return
+		}
+	}
+
 	// Global key bindings.
 	app.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		// When the Settings overlay is in front, delegate Tab cycling
+		// and Esc to it so the chat-mode bindings don't steal those
+		// keys. Ctrl-C still falls through so the user can always quit.
+		if pages.HasPage("settings") {
+			if name, _ := pages.GetFrontPage(); name == "settings" && ev.Key() != tcell.KeyCtrlC {
+				if next := settings.handleKey(ev); next == nil {
+					return nil
+				}
+				return ev
+			}
+		}
 		switch ev.Key() {
 		case tcell.KeyCtrlC:
 			app.Stop()
@@ -843,13 +1316,36 @@ func Run(ctx context.Context, cfg Config) error {
 			}
 			return nil
 		case tcell.KeyTab:
-			setFocus((focusIdx + 1) % len(focusList))
+			cycleFocus(1)
 			return nil
 		case tcell.KeyBacktab:
-			setFocus((focusIdx + len(focusList) - 1) % len(focusList))
+			cycleFocus(-1)
 			return nil
 		case tcell.KeyCtrlL:
 			chat.Clear()
+			return nil
+		case tcell.KeyCtrlT:
+			setTraceVisible(!traceVisible)
+			return nil
+		case tcell.KeyCtrlS:
+			// Open the Settings overlay. The overlay installs its own
+			// per-pane key captures plus a top-level Tab/Esc handler;
+			// the global capture below routes Tab/Esc to it while it's
+			// the front page.
+			if !pages.HasPage("settings") {
+				settings.open()
+			}
+			return nil
+		case tcell.KeyCtrlR:
+			go func() {
+				appendChat("\n[gray]hot-reloading agent generation…[-]\n")
+				inst, err := cfg.Manager.Reload(ctx, cfg.AgentOptions)
+				if err != nil {
+					appendChat("[red]reload failed:[-] %v\n", err)
+					return
+				}
+				appendChat("[green]reload complete[-] (generation=%d)\n", inst.Generation)
+			}()
 			return nil
 		}
 		return ev
@@ -877,7 +1373,7 @@ func Run(ctx context.Context, cfg Config) error {
 
 	// Welcome banner. Write directly: app.Run() hasn't started yet, so
 	// QueueUpdateDraw would deadlock (its queue is only drained by Run).
-	fmt.Fprintf(chat, "[gray]Welcome to %s. Type a message and press Enter.\nTab / Shift-Tab to scroll Chat or Trace panes. Esc returns focus to input. Ctrl-L clears the chat. Ctrl-C to quit.[-]\n", cfg.AppName)
+	fmt.Fprintf(chat, "[gray]Welcome to %s. Type a message and press Enter.\nTab cycles Input → Chat → Sessions (and Trace when shown). Sessions pane: n=new, d=delete, Enter=switch.\nCtrl-S opens Settings · Ctrl-T toggles Trace · Ctrl-R hot-reloads · Ctrl-L clears chat · Ctrl-C quits.[-]\n", cfg.AppName)
 
 	// Pre-warm markdown rendering so the first assistant turn avoids
 	// renderer initialization cost on the critical path.
@@ -899,14 +1395,22 @@ func Run(ctx context.Context, cfg Config) error {
 	// draining the update queue. Emitting it inline before app.Run()
 	// would deadlock.
 	if cfg.Bus != nil {
+		startID := initial.ID
 		go cfg.Bus.Emit(events.EventSessionStart, map[string]any{
 			"user_id":    cfg.UserID,
-			"session_id": cfg.SessionID,
+			"session_id": startID,
 		})
-		defer cfg.Bus.Emit(events.EventSessionEnd, map[string]any{
-			"user_id":    cfg.UserID,
-			"session_id": cfg.SessionID,
-		})
+		defer func() {
+			cur := current.Load()
+			endID := startID
+			if cur != nil {
+				endID = cur.ID
+			}
+			cfg.Bus.Emit(events.EventSessionEnd, map[string]any{
+				"user_id":    cfg.UserID,
+				"session_id": endID,
+			})
+		}()
 	}
 
 	// Keep terminal mouse reporting disabled so users can use native
@@ -961,9 +1465,12 @@ func shortArgs(args map[string]any) string {
 	return "(" + strings.Join(parts, ", ") + ")"
 }
 
-func buildStatusText(cfg Config, inputTokens, cachedInputTokens, cacheCreationTokens, outputTokens int64) string {
-	text := fmt.Sprintf(" [::b]%s[-]   session: [yellow]%s[-]   user: [yellow]%s[-]   tokens in/out: [yellow]%d[-]/[yellow]%d[-]",
-		cfg.AppName, cfg.SessionID, cfg.UserID, inputTokens, outputTokens)
+func buildStatusText(cfg Config, sessionID, squad string, inputTokens, cachedInputTokens, cacheCreationTokens, outputTokens int64) string {
+	if squad == "" {
+		squad = toolkitagent.DefaultSquadName
+	}
+	text := fmt.Sprintf(" [::b]%s[-]   session: [yellow]%s[-] ([aqua]%s[-])   user: [yellow]%s[-]   tokens in/out: [yellow]%d[-]/[yellow]%d[-]",
+		cfg.AppName, sessionID, squad, cfg.UserID, inputTokens, outputTokens)
 	if cachedInputTokens > 0 || cacheCreationTokens > 0 {
 		text += fmt.Sprintf(" [gray](cache r/w: %d/%d)[-]", cachedInputTokens, cacheCreationTokens)
 	}
@@ -1118,6 +1625,92 @@ func showAskUserModal(
 		pages.AddPage(pageName, centered(form, 60, 10), true, true)
 		app.SetFocus(form)
 	}
+}
+
+// pickInitialSession returns the session the TUI should land on at
+// startup: the most recently used persisted one, or a brand new
+// default-squad session when the registry is empty. The new-session
+// path also persists the squad to disk so the conversation file is
+// usable on the next launch.
+func pickInitialSession(cfg Config) *sessionState {
+	list := cfg.Sessions.List()
+	if len(list) > 0 {
+		// List is sorted newest-first by CreatedAt; bump LastUsedAt by
+		// preferring whichever entry has the latest activity to align
+		// with the web UI's "resume your last chat" behaviour.
+		latest := list[0]
+		for _, m := range list[1:] {
+			if m.LastUsedAt.After(latest.LastUsedAt) {
+				latest = m
+			}
+		}
+		squad := latest.Squad
+		if squad == "" {
+			squad = toolkitagent.DefaultSquadName
+		}
+		return &sessionState{ID: latest.ID, Squad: squad}
+	}
+	squad := toolkitagent.DefaultSquadName
+	meta := cfg.Sessions.New(squad)
+	_ = sessions.SetConversationSquad(meta.ID, squad)
+	return &sessionState{ID: meta.ID, Squad: squad}
+}
+
+// stageUploadFile copies the user-supplied file into the session's
+// uploads directory under $YOKE_HOME/logs/uploads/<sessionID>/ so the
+// agent (or its tools) can reach it from a stable path. Returns the
+// staged absolute path on success.
+func stageUploadFile(sessionID, src string) (string, error) {
+	src = strings.TrimSpace(src)
+	if src == "" {
+		return "", fmt.Errorf("empty path")
+	}
+	abs, err := filepath.Abs(src)
+	if err != nil {
+		return "", err
+	}
+	st, err := os.Stat(abs)
+	if err != nil {
+		return "", err
+	}
+	if st.IsDir() {
+		return "", fmt.Errorf("%s is a directory", abs)
+	}
+	uploadsDir := filepath.Join(paths.LogsDir(), "uploads", sessionID)
+	if err := os.MkdirAll(uploadsDir, 0o755); err != nil {
+		return "", err
+	}
+	dst := filepath.Join(uploadsDir, filepath.Base(abs))
+	in, err := os.Open(abs)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return "", err
+	}
+	return dst, nil
+}
+
+// nameAvailableSquads sorts the squad list with the default squad first
+// so the picker dialog always offers a familiar baseline.
+func nameAvailableSquads(in []string) []string {
+	out := append([]string{}, in...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i] == toolkitagent.DefaultSquadName {
+			return true
+		}
+		if out[j] == toolkitagent.DefaultSquadName {
+			return false
+		}
+		return out[i] < out[j]
+	})
+	return out
 }
 
 // centered wraps a primitive in a flex that centres it with the given width

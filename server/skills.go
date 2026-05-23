@@ -17,11 +17,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"gopkg.in/yaml.v3"
 
 	"github.com/blouargant/yoke/agent"
 	"github.com/blouargant/yoke/internal/paths"
 	"github.com/blouargant/yoke/internal/registries"
+	"github.com/blouargant/yoke/internal/registrymeta"
 )
 
 const (
@@ -112,77 +112,20 @@ func resolveSkillsDeps(cfgFiles configFiles) skillsDeps {
 	}
 }
 
-// ── Frontmatter ────────────────────────────────────────────────────────────
-
-type skillFrontmatter struct {
-	Name        string                 `yaml:"name"`
-	Description string                 `yaml:"description"`
-	Metadata    map[string]interface{} `yaml:"metadata"`
-}
-
-func (fm skillFrontmatter) author() string {
-	if fm.Metadata == nil {
-		return ""
-	}
-	s, _ := fm.Metadata["author"].(string)
-	return s
-}
-
-func (fm skillFrontmatter) tags() []string {
-	if fm.Metadata == nil {
-		return nil
-	}
-	raw, ok := fm.Metadata["tags"]
-	if !ok {
-		return nil
-	}
-	switch v := raw.(type) {
-	case []string:
-		return v
-	case []interface{}:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			if s, ok := item.(string); ok {
-				out = append(out, s)
-			}
-		}
-		return out
-	}
-	return nil
-}
-
-// parseSkillFrontmatter extracts YAML front matter (--- ... ---) from a SKILL.md.
-func parseSkillFrontmatter(content []byte) (skillFrontmatter, error) {
-	s := string(content)
-	s = strings.TrimLeft(s, "\r\n")
-	if !strings.HasPrefix(s, "---") {
-		return skillFrontmatter{}, fmt.Errorf("no YAML frontmatter (missing opening ---)")
-	}
-	rest := s[3:]
-	idx := strings.Index(rest, "\n---")
-	if idx < 0 {
-		return skillFrontmatter{}, fmt.Errorf("unclosed frontmatter (missing closing ---)")
-	}
-	var fm skillFrontmatter
-	if err := yaml.Unmarshal([]byte(rest[:idx]), &fm); err != nil {
-		return skillFrontmatter{}, fmt.Errorf("invalid frontmatter YAML: %w", err)
-	}
-	return fm, nil
-}
-
 // ── Registry helpers ───────────────────────────────────────────────────────
 
-type skillInfo struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	Author      string                 `json:"author,omitempty"`
-	Tags        []string               `json:"tags,omitempty"`
-	Metadata    map[string]interface{} `json:"metadata,omitempty"`
-	MTime       time.Time              `json:"mtime"`
-	Size        int64                  `json:"size"`
-	LinkedIn    []string               `json:"linked_in"`
-	Source      string                 `json:"source"`
-}
+// skillFrontmatter, skillInfo, parseSkillFrontmatter, and
+// listRegistrySkills now live in internal/registrymeta. The aliases
+// below keep this file readable without re-exporting at every call site.
+type (
+	skillFrontmatter = registrymeta.Frontmatter
+	skillInfo        = registrymeta.SkillInfo
+)
+
+var (
+	parseSkillFrontmatter = registrymeta.ParseFrontmatter
+	listRegistrySkills    = registrymeta.ListSkills
+)
 
 // pathLayer returns "local", "user", or "system" based on where dirPath sits
 // in the config search chain. Used to label skills and agents in the web UI.
@@ -190,61 +133,6 @@ type skillInfo struct {
 // local.
 func pathLayer(dirPath string) string {
 	return paths.Layer(dirPath)
-}
-
-// listRegistrySkills scans all dirs in precedence order and returns merged
-// metadata. First occurrence of a skill name wins (matches the config chain).
-func listRegistrySkills(dirs ...string) ([]skillInfo, error) {
-	seen := make(map[string]bool)
-	var out []skillInfo
-	for _, registryDir := range dirs {
-		entries, err := os.ReadDir(registryDir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, err
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			name := e.Name()
-			if seen[name] {
-				continue
-			}
-			skillMD := filepath.Join(registryDir, name, "SKILL.md")
-			data, err := os.ReadFile(skillMD)
-			if err != nil {
-				continue
-			}
-			seen[name] = true
-			st, _ := os.Stat(skillMD)
-			fm, _ := parseSkillFrontmatter(data)
-			displayName := fm.Name
-			if displayName == "" {
-				displayName = name
-			}
-			info := skillInfo{
-				Name:        displayName,
-				Description: fm.Description,
-				Author:      fm.author(),
-				Tags:        fm.tags(),
-				Metadata:    fm.Metadata,
-				Size:        int64(len(data)),
-				LinkedIn:    []string{},
-				Source:      pathLayer(registryDir),
-			}
-			if st != nil {
-				info.MTime = st.ModTime()
-			}
-			out = append(out, info)
-		}
-	}
-	if out == nil {
-		return []skillInfo{}, nil
-	}
-	return out, nil
 }
 
 // agentSkillList returns the agent's declared skills, normalised to a non-nil slice.
@@ -655,8 +543,8 @@ func registerSkillsRoutes(rg *gin.RouterGroup, deps skillsDeps) {
 		c.JSON(http.StatusOK, gin.H{
 			"name":        firstNonEmpty(fm.Name, name),
 			"description": fm.Description,
-			"author":      fm.author(),
-			"tags":        fm.tags(),
+			"author":      fm.Author(),
+			"tags":        fm.Tags(),
 			"metadata":    fm.Metadata,
 			"content":     string(data),
 			"mtime":       mtime,

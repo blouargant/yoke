@@ -36,6 +36,7 @@ import (
 	"github.com/blouargant/yoke/internal/cli"
 	"github.com/blouargant/yoke/internal/paths"
 	"github.com/blouargant/yoke/internal/registries"
+	"github.com/blouargant/yoke/internal/sessions"
 	"github.com/blouargant/yoke/internal/tui"
 )
 
@@ -179,37 +180,74 @@ func runCLI(ctx context.Context, opts options, promptArgs []string) error {
 	})
 }
 
-// runTUI mirrors the legacy `--tui` flag: launches the tview chat UI.
+// runTUI launches the tview chat UI in multi-session mode, mirroring
+// the web UI's session-sidebar + squad-aware chat behaviour. It builds
+// the same Infrastructure+Manager combo the HTTP server uses so the
+// TUI and server share session storage and skills.
 func runTUI(ctx context.Context, opts options) error {
-	result, err := buildAgent(ctx, opts)
+	curatorEnabled, err := parseOptionalBool(opts.curatorRaw)
 	if err != nil {
 		return err
 	}
-	r, err := runner.New(result.RunnerConfig)
-	if err != nil {
-		return fmt.Errorf("tui runner: %w", err)
+	agentOpts := agent.Options{
+		SoftSkillsDir:    opts.softSkillsDir,
+		AppName:          opts.appName,
+		ConfigPath:       opts.configPath,
+		ConfigPathStrict: opts.configPath != "",
+		ModelProvider:    opts.modelProvider,
+		ModelName:        opts.modelName,
+		ModelBaseURL:     opts.modelBaseURL,
+		ModelAPIKey:      opts.modelAPIKey,
+		CuratorEnabled:   curatorEnabled,
+		DebugLogging:     opts.debug,
 	}
-	subAgentNames := make([]string, 0, len(result.SubAgents))
-	for name := range result.SubAgents {
+	infra, err := agent.BuildInfrastructure(ctx, agentOpts)
+	if err != nil {
+		return err
+	}
+	defer infra.Close()
+	if agentOpts.Repo == "" {
+		agentOpts.Repo = infra.Repo
+	}
+	if agentOpts.AppName == "" {
+		agentOpts.AppName = infra.AppName
+	}
+	inst, err := agent.BuildInstance(ctx, infra, agentOpts, 1)
+	if err != nil {
+		return err
+	}
+	manager := agent.NewManager(infra, inst)
+	defer manager.Close()
+
+	registry := sessions.NewRegistry()
+
+	subAgentNames := make([]string, 0, len(inst.SubAgents))
+	for name := range inst.SubAgents {
 		subAgentNames = append(subAgentNames, name)
 	}
 	sort.Strings(subAgentNames)
 
-	if result.EventBus != nil {
-		result.EventBus.Emit(events.EventSessionStart, map[string]any{})
-		defer result.EventBus.Emit(events.EventSessionEnd, map[string]any{})
+	if infra.Bus != nil {
+		infra.Bus.Emit(events.EventSessionStart, map[string]any{})
+		defer infra.Bus.Emit(events.EventSessionEnd, map[string]any{})
 	}
 
+	leaderCfg := inst.LeaderCfg
 	return tui.Run(ctx, tui.Config{
-		Runner:                            r,
-		Bus:                               result.EventBus,
-		AskUserRegistry:                   result.AskUserRegistry,
-		AppName:                           result.RunnerConfig.AppName,
+		Manager:                           manager,
+		Sessions:                          registry,
+		Bus:                               infra.Bus,
+		AskUserRegistry:                   infra.AskUserRegistry,
+		AppName:                           inst.RunnerConfig.AppName,
 		SubAgentNames:                     subAgentNames,
-		InputTokenPricePerMillion:         result.LeaderInputTokenPricePerMillion,
-		OutputTokenPricePerMillion:        result.LeaderOutputTokenPricePerMillion,
-		CachedInputTokenPricePerMillion:   result.LeaderCachedInputTokenPricePerMillion,
-		CacheCreationTokenPricePerMillion: result.LeaderCacheCreationTokenPricePerMillion,
+		RegisterSession:                   infra.RegisterSession,
+		UnregisterSession:                 infra.UnregisterSession,
+		WatchMailbox:                      infra.WatchMailbox,
+		AgentOptions:                      agentOpts,
+		InputTokenPricePerMillion:         leaderCfg.InputTokenPricePerMillion,
+		OutputTokenPricePerMillion:        leaderCfg.OutputTokenPricePerMillion,
+		CachedInputTokenPricePerMillion:   leaderCfg.CachedInputTokenPricePerMillion,
+		CacheCreationTokenPricePerMillion: leaderCfg.CacheCreationTokenPricePerMillion,
 	})
 }
 
