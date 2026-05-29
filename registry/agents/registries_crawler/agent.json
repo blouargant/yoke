@@ -9,7 +9,6 @@
   "skills": null,
   "softskills_dir": "",
   "tools": [
-    "registries",
-    "code_search"
+    "registries"
   ]
 }

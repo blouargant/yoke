@@ -30,6 +30,7 @@ import (
 	"github.com/blouargant/yoke/internal/codeindex"
 	mcpcfg "github.com/blouargant/yoke/internal/mcp"
 	"github.com/blouargant/yoke/internal/paths"
+	"github.com/blouargant/yoke/internal/regindex"
 	"github.com/blouargant/yoke/internal/registries"
 	"github.com/blouargant/yoke/internal/skills"
 	"github.com/blouargant/yoke/internal/softskills"
@@ -163,7 +164,7 @@ func defaultToolKeys(name string) []string {
 	}
 }
 
-func toolsForAgentConfig(ctx context.Context, cfg RuntimeAgentConfig, runtime RuntimeSettings, skillTS, softSkillTS tool.Toolset, leaderMCPHandles []*mcpcfg.Handle, pool *mcpcfg.Pool, codeIdx *codeindex.Index) ([]tool.Tool, []tool.Toolset, string, []*mcpcfg.Handle) {
+func toolsForAgentConfig(ctx context.Context, cfg RuntimeAgentConfig, runtime RuntimeSettings, skillTS, softSkillTS tool.Toolset, leaderMCPHandles []*mcpcfg.Handle, pool *mcpcfg.Pool, codeIdx *codeindex.Index, regIdx *regindex.Index) ([]tool.Tool, []tool.Toolset, string, []*mcpcfg.Handle) {
 	keys := cfg.Tools
 	if keys == nil {
 		keys = defaultToolKeys(cfg.Name)
@@ -244,6 +245,12 @@ func toolsForAgentConfig(ctx context.Context, cfg RuntimeAgentConfig, runtime Ru
 		case "registries":
 			agentTools = append(agentTools, registries.NewTools(buildRegistriesDeps(runtime))...)
 			hasRegistries = true
+			// Semantic registry search is mounted alongside the glob browse
+			// tools only when an embedder is configured; otherwise the agent
+			// falls back to browse_registry (additive contract).
+			if regIdx != nil {
+				agentTools = append(agentTools, regIdx.Tools()...)
+			}
 		case "code_search":
 			// Mounted only when a semantic embedder is configured; otherwise
 			// the agent falls back to grep/read (additive contract).

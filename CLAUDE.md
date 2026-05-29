@@ -158,9 +158,10 @@ Resulting tags are applied to `_stats.json` via `Stats.RecordTag`.
 | `internal/teammates/` | Inter-agent mailbox FSM: `teammate_ask/tell/inbox` |
 | `internal/skills/` | Skill loader: `load_skill`, `list_skills` (reads `registry/skills/<name>/SKILL.md`) |
 | `internal/softskills/` | Curator output: `load_softskill`, `list_softskills` (reads `softskills/`); `Stats` sidecar + `ReflectHeuristic` (deterministic per-skill helpful/harmful/neutral tagging); `recall.go` adds the embedder-gated `recall_softskills` semantic-rank tool |
-| `internal/semindex/` | Reusable persistence + query layer over a go-turbovec `IdMapIndex` (`.tvim` + `.meta.json` sidecar + manifest); `Open`/`Upsert`/`Query`/`Remove`/`Save`. Backs all three recall features; nil-embedder handles degrade with `ErrNoEmbedder` |
+| `internal/semindex/` | Reusable persistence + query layer over a go-turbovec `IdMapIndex` (`.tvim` + `.meta.json` sidecar + manifest); `Open`/`Upsert`/`Query`/`Remove`/`Save`. Backs all four recall features; nil-embedder handles degrade with `ErrNoEmbedder` |
 | `internal/precedents/` | Cross-session precedent index over `semindex` at `index/precedents`; indexes each session's goal + decisions; `recall_precedents` tool |
 | `internal/codeindex/` | Per-repo semantic code index over `semindex` (line-window chunks, `git ls-files`-aware, content-hash incremental); `search_code` + `reindex_code` tools |
+| `internal/regindex/` | Semantic index over **remote registry** items (skills + agents) over `semindex` at `index/registries`; metadata-only (name+description+tags, no extra fetch beyond a browse); `search_registries` + `reindex_registries` tools. Rebuilds on registry-set change (corpus-hash self-heal in `Search` + `registries.OnSave` background hook) |
 | `internal/compress/` | Per-session context compression plugin + audit/statelog files |
 | `internal/cache/` | Prompt cache hit-rate stats plugin |
 | `internal/mcp/` | MCP config loader (path resolved from search chain) |
@@ -171,7 +172,7 @@ Resulting tags are applied to `_stats.json` via `Stats.RecordTag`.
 
 ### Semantic recall (embedder + vector indexes)
 
-Three **additive, embedder-gated** recall features share `core/embed` +
+Four **additive, embedder-gated** recall features share `core/embed` +
 `internal/semindex` (a wrapper over the `go-turbovec` pure-Go ANN index,
 BitWidth 4 + UnitNorm cosine):
 
@@ -183,12 +184,23 @@ BitWidth 4 + UnitNorm cosine):
    + decisions ([internal/precedents/](internal/precedents/)). Indexed on
    `EventSessionReflected` by [agent/precedents_hook.go](agent/precedents_hook.go);
    backfill via `yoke reindex-precedents`.
-3. **`search_code` / `reindex_code`** (investigator, registries_crawler) —
+3. **`search_code` / `reindex_code`** (investigator) —
    semantic code search over the repo ([internal/codeindex/](internal/codeindex/)),
    `git ls-files`-aware, content-hash incremental.
+4. **`search_registries` / `reindex_registries`** (registries_crawler) —
+   semantic search over the skills + agents advertised by the configured remote
+   registries ([internal/regindex/](internal/regindex/)). Mounted alongside the
+   glob `browse_registry` whenever the `registries` tool group is present and an
+   embedder resolves. **Metadata-only**: embeds the name/description/tags a
+   browse already returns, so no HTTP fetch beyond a normal browse. Indexing is
+   lazy (first `search_registries` call) and self-healing (a corpus hash of the
+   registry set — ids+urls+kinds — triggers a rebuild in `Search` when it
+   changes); a `registries.OnSave` hook also rebuilds in the background after
+   any web-UI/tool edit to `remote_registries.json`. Remote *content* drift
+   (same URL, changed skills) is only caught by explicit `reindex_registries`.
 
 The embedder and all index handles are process-wide on `Infrastructure`
-(`Embedder()`, `Precedents()`, `CodeIndex()` in [agent/embedder.go](agent/embedder.go)),
+(`Embedder()`, `Precedents()`, `CodeIndex()`, `RegistryIndex()` in [agent/embedder.go](agent/embedder.go)),
 built lazily and surviving hot-reload. **Contract: when no embedder resolves,
 none of the recall tools are mounted and every path falls back to glob/grep —
 behaviour is byte-identical to a build without these features.** See
@@ -324,6 +336,7 @@ Two roots, resolved by [internal/paths/paths.go](internal/paths/paths.go):
   │   ├── embed_cache/  #   content-hash embedding cache (sha256(model+text))
   │   ├── softskills.tvim + .meta.json   # recall_softskills index
   │   ├── precedents.tvim + .meta.json   # recall_precedents index
+  │   ├── registries.tvim + .meta.json   # search_registries index (remote skills+agents)
   │   └── <repo-hash>/  #   per-repo code index: codebase.tvim + .meta.json
   │                     #   + codebase.files.json (per-file hash→chunk-ids)
   ├── softskills/       # curator-distilled procedures (read AND write)

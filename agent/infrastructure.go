@@ -61,6 +61,11 @@ type Infrastructure struct {
 	// codeIndex memoises the process-wide project code-search index (see
 	// CodeIndex). Keyed by the repo root; backed by the same embedder.
 	codeIndex codeIndexCache
+
+	// regIndex memoises the process-wide semantic index over remote registry
+	// items (see RegistryIndex). Backed by the same embedder; rebuilt on
+	// registry config change via registries.OnSave.
+	regIndex regIndexCache
 }
 
 // BuildInfrastructure constructs the shared infrastructure for the agent.

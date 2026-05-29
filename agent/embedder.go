@@ -10,7 +10,10 @@ import (
 
 	"github.com/blouargant/yoke/core/embed"
 	"github.com/blouargant/yoke/internal/codeindex"
+	"github.com/blouargant/yoke/internal/paths"
 	"github.com/blouargant/yoke/internal/precedents"
+	"github.com/blouargant/yoke/internal/regindex"
+	"github.com/blouargant/yoke/internal/registries"
 )
 
 // embedderEnvConfigured reports whether the operator set any YOKE_EMBED_*
@@ -135,4 +138,48 @@ func (i *Infrastructure) CodeIndex(ctx context.Context, runtime RuntimeSettings)
 		i.codeIndex.index = idx
 	})
 	return i.codeIndex.index
+}
+
+// regIndexCache memoises the process-wide remote-registry semantic index.
+type regIndexCache struct {
+	once  sync.Once
+	index *regindex.Index
+}
+
+// RegistryIndex lazily opens and caches the semantic index over remote
+// registry items, backed by the process-wide embedder. Returns nil when no
+// embedder is configured, so callers skip mounting search_registries and the
+// crawler falls back to browse_registry. The path thunks mirror
+// buildRegistriesDeps so the Installed annotation matches the web UI.
+func (i *Infrastructure) RegistryIndex(ctx context.Context, runtime RuntimeSettings) *regindex.Index {
+	if i == nil {
+		return nil
+	}
+	emb := i.Embedder(ctx, runtime)
+	if emb == nil {
+		return nil
+	}
+	i.regIndex.once.Do(func() {
+		idx, err := regindex.Open(emb, regindex.Config{
+			ConfigPath: registries.ReadConfigPath,
+			SkillsDir: func() string {
+				if v := strings.TrimSpace(os.Getenv("YOKE_SKILLS_REGISTRY_DIR")); v != "" {
+					return v
+				}
+				return paths.SkillsRegistryDir()
+			},
+			AgentsDir: func() string {
+				if v := strings.TrimSpace(os.Getenv("YOKE_AGENTS_REGISTRY_DIR")); v != "" {
+					return v
+				}
+				return paths.AgentsRegistryDir()
+			},
+		})
+		if err != nil {
+			log.Printf("regindex: index unavailable: %v", err)
+			return
+		}
+		i.regIndex.index = idx
+	})
+	return i.regIndex.index
 }

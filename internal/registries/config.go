@@ -6,12 +6,40 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/blouargant/yoke/internal/paths"
 )
 
 // ConfigFileName is the basename of the remote-registry config file.
 const ConfigFileName = "remote_registries.json"
+
+// onSave is an optional process-wide hook fired after a successful
+// SaveRegistries. The semantic registry index (internal/regindex) registers it
+// to rebuild proactively when the web UI or a tool install changes the
+// registry list. Guarded so set/fire never race.
+var (
+	onSaveMu sync.RWMutex
+	onSave   func()
+)
+
+// SetOnSave registers (or clears, with nil) the post-save hook. Set-once
+// semantics fit the caller (a process-wide index built lazily), but repeated
+// calls simply replace the hook.
+func SetOnSave(fn func()) {
+	onSaveMu.Lock()
+	onSave = fn
+	onSaveMu.Unlock()
+}
+
+func fireOnSave() {
+	onSaveMu.RLock()
+	fn := onSave
+	onSaveMu.RUnlock()
+	if fn != nil {
+		fn()
+	}
+}
 
 // ReadConfigPath returns the highest-precedence config path (or the would-be
 // write location when none exists). Use this for reads.
@@ -53,7 +81,11 @@ func SaveRegistries(path string, list []Registry) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return atomicWriteFile(path, data)
+	if err := atomicWriteFile(path, data); err != nil {
+		return err
+	}
+	fireOnSave()
+	return nil
 }
 
 // NewID returns a short random hex ID suitable for a Registry.ID.
