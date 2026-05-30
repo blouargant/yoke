@@ -75,6 +75,8 @@ type activeSession struct {
 func activeFromRegistry(reg *sessions.Registry) (ids map[string]struct{}, suffixes map[string]struct{}) {
 	ids = make(map[string]struct{})
 	suffixes = make(map[string]struct{})
+	// Archived sessions remain in reg.List(), so they are treated as "active"
+	// here and their conversation/agent files are intentionally retained.
 	for _, m := range reg.List() {
 		ids[m.ID] = struct{}{}
 		suffixes[agent.SessionSuffix(m.UserID, m.ID)] = struct{}{}

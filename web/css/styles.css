@@ -73,6 +73,62 @@ html, body {
 body { display: flex; overflow: hidden; }
 
 /* ─── Sidebar ──────────────────────────────────────────────── */
+/* ─── Themed hover tooltip ─────────────────────────────────────
+   Opt in by setting data-tip="…" on any element instead of the native
+   `title`, so tooltips track the active theme. Rendered by a single
+   body-appended `#tip-layer` element (see app.js `initTooltips`) rather
+   than a CSS `::after` pseudo, so the tooltip is `position: fixed` and
+   escapes every `overflow`/stacking context — sidebar and archived-list
+   action buttons no longer clip or mask it. Default placement is *above*
+   the target, flipping below only when there is no room near the
+   viewport top. `.model-status-dot` keeps its own pseudo tooltip
+   (settings.css) and is skipped by the JS layer. */
+[data-tip] { position: relative; }
+#tip-layer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9999;
+  pointer-events: none;
+  white-space: nowrap;
+  background: var(--bg-raised);
+  color: var(--text-strong);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 0.35rem 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  box-shadow: var(--shadow-bubble, 0 4px 14px rgba(0, 0, 0, 0.4));
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+#tip-layer.below { transform: translateY(-4px); }
+#tip-layer.show { opacity: 1; transform: translateY(0); }
+#tip-layer::after {
+  content: "";
+  position: absolute;
+  left: var(--tip-arrow-x, 50%);
+  margin-left: -4px;
+  width: 8px;
+  height: 8px;
+  background: var(--bg-raised);
+  transform: rotate(45deg);
+}
+/* tooltip above the target → arrow points down off the bottom edge */
+#tip-layer:not(.below)::after {
+  bottom: -5px;
+  border-right: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border-strong);
+}
+/* tooltip below the target → arrow points up off the top edge */
+#tip-layer.below::after {
+  top: -5px;
+  border-left: 1px solid var(--border-strong);
+  border-top: 1px solid var(--border-strong);
+}
+
 #sidebar {
   width: var(--sidebar-w);
   min-width: 0;
@@ -353,6 +409,7 @@ body.resizing #sidebar { transition: none; }
   display: flex;
   gap: 2px;
   flex-shrink: 0;
+  margin-left: auto;
   opacity: 0;
   transition: opacity 0.1s;
 }
@@ -389,6 +446,64 @@ body.resizing #sidebar { transition: none; }
   outline: none;
   box-sizing: border-box;
 }
+
+/* ─── Archived sessions panel ──────────────────────────────── */
+#archived-panel {
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex-shrink: 0;
+}
+#archived-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+#archived-header:hover { background: var(--bg-raised); }
+#archived-header .sidebar-section-label { margin: 0; }
+.archived-chevron {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  transition: transform 0.12s ease;
+}
+#archived-panel:not(.collapsed) .archived-chevron { transform: rotate(90deg); }
+.archived-count { color: var(--text-faint); font-size: 12px; margin-left: auto; }
+#archived-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 6px;
+  overflow-y: auto;
+  max-height: 32vh;
+}
+#archived-panel.collapsed #archived-list { display: none; }
+/* Archived rows reuse the active-session row look and hover behaviour. */
+#archived-list li {
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-bottom: 1px;
+  transition: background 0.1s, color 0.1s;
+}
+#archived-list li:hover { background: var(--bg-raised); color: var(--text); }
+#archived-list li.active { background: var(--bg-active); color: var(--text-strong); }
+#archived-list li .meta {
+  font-size: 12px;
+  color: var(--text-faint);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#archived-list li:hover .session-actions,
+#archived-list li.active .session-actions { opacity: 1; }
+.unarchive-btn:hover { color: var(--accent-strong); }
 
 #sidebar-footer {
   padding: 8px 12px;
@@ -991,6 +1106,10 @@ body.resizing #sidebar-resize { transition: none; }
   gap: 8px;
   height: var(--composer-h, auto);
 }
+
+/* Archived sessions are read-only: dim the composer to signal it's inert. */
+#composer-wrap.archived-readonly { opacity: 0.55; }
+#composer-wrap.archived-readonly #prompt { cursor: not-allowed; }
 
 #composer-resize {
   height: 10px;

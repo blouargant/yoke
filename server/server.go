@@ -386,6 +386,53 @@ func newEngine(d serverDeps) *gin.Engine {
 		meta, _ := d.Registry.Get(id)
 		c.JSON(http.StatusOK, meta)
 	})
+	// POST /api/sessions/:id/archive — set a session aside as read-only. The
+	// session stays in the registry (so the GC keeps its files and it keeps
+	// feeding semantic-recall indexes) but is detached from its agent
+	// generation: the push watcher stops and the generation pin is released.
+	auth.POST("/sessions/:id/archive", func(c *gin.Context) {
+		id := c.Param("id")
+		if !d.Registry.SetArchived(id, true) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+		if d.PushMgr != nil {
+			d.PushMgr.Stop(id)
+		}
+		if d.Manager != nil {
+			d.Manager.Release(id)
+		}
+		if d.PushEvents != nil {
+			d.PushEvents.notify(id)
+		}
+		meta, _ := d.Registry.Get(id)
+		c.JSON(http.StatusOK, meta)
+	})
+	// POST /api/sessions/:id/unarchive — restore an archived session to active.
+	// Re-pin it to the current generation and restart its push watcher so
+	// background mailbox turns are delivered again.
+	auth.POST("/sessions/:id/unarchive", func(c *gin.Context) {
+		id := c.Param("id")
+		if !d.Registry.SetArchived(id, false) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+		userID := sessions.DefaultUserID
+		if meta, ok := d.Registry.Get(id); ok && meta.UserID != "" {
+			userID = meta.UserID
+		}
+		if d.Manager != nil {
+			d.Manager.Pin(id)
+		}
+		if d.PushMgr != nil {
+			d.PushMgr.Watch(d.rootCtx, d, id, userID)
+		}
+		if d.PushEvents != nil {
+			d.PushEvents.notify(id)
+		}
+		meta, _ := d.Registry.Get(id)
+		c.JSON(http.StatusOK, meta)
+	})
 	auth.GET("/sessions/:id/messages", func(c *gin.Context) {
 		id := c.Param("id")
 		if _, ok := d.Registry.Get(id); !ok {

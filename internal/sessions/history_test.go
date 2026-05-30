@@ -78,3 +78,73 @@ func TestConversationSquadRoundTrip(t *testing.T) {
 		t.Fatalf("marshalled meta missing squad: %s", b)
 	}
 }
+
+// TestArchivedFlagRoundTrip verifies the archived flag survives a "server
+// restart": SetConversationArchived persists it and LoadPersistedSessions
+// reads it back into the rebuilt registry, without disturbing the
+// conversation turns. Clearing the flag (unarchive) round-trips too.
+func TestArchivedFlagRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("YOKE_HOME", tmp)
+	if err := os.MkdirAll(filepath.Join(tmp, "logs"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const sid = "archive-test"
+	if err := AppendConversationTurn(sid, "hi", "hello"); err != nil {
+		t.Fatalf("AppendConversationTurn: %v", err)
+	}
+
+	reloaded := func() *SessionMeta {
+		for _, m := range LoadPersistedSessions() {
+			if m.ID == sid {
+				return m
+			}
+		}
+		return nil
+	}
+
+	if err := SetConversationArchived(sid, true); err != nil {
+		t.Fatalf("SetConversationArchived: %v", err)
+	}
+	meta := reloaded()
+	if meta == nil {
+		t.Fatalf("session %q missing after archive", sid)
+	}
+	if !meta.Archived {
+		t.Fatalf("Archived = false after archive, want true")
+	}
+	if meta.Turns != 1 {
+		t.Fatalf("Turns = %d after archive, want 1 (turns must be preserved)", meta.Turns)
+	}
+
+	// Unarchive round-trips back to active.
+	if err := SetConversationArchived(sid, false); err != nil {
+		t.Fatalf("SetConversationArchived(false): %v", err)
+	}
+	if meta := reloaded(); meta == nil || meta.Archived {
+		t.Fatalf("Archived still set after unarchive: %+v", meta)
+	}
+}
+
+// TestRegistrySetArchived verifies the in-memory flag toggles and the missing
+// session case returns false.
+func TestRegistrySetArchived(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("YOKE_HOME", tmp)
+	if err := os.MkdirAll(filepath.Join(tmp, "logs"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	reg := NewEmptyRegistry()
+	m := reg.New("")
+	if !reg.SetArchived(m.ID, true) {
+		t.Fatalf("SetArchived(existing) = false, want true")
+	}
+	if got, _ := reg.Get(m.ID); got == nil || !got.Archived {
+		t.Fatalf("in-memory Archived not set: %+v", got)
+	}
+	if reg.SetArchived("does-not-exist", true) {
+		t.Fatalf("SetArchived(missing) = true, want false")
+	}
+}

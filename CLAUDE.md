@@ -443,7 +443,38 @@ Every mutable component scopes its state by `(userID, buildTimestamp)`. Concurre
 - `agent_memory_<u>_<ts>.md` — compressed session memory
 - `agent_statelog_<u>_<ts>.json` — full state log (consumed by curator)
 - `agent_events_<ts>.log` — event audit log (global per build)
-- `conversation_<id>.json` — Web UI turn history + title + `squad` name + `Harvested` flag (server only)
+- `conversation_<id>.json` — Web UI turn history + title + `squad` name + `Harvested` flag + `Archived` flag (server only)
+
+### Session states (active / archived / deleted)
+
+A session is in one of three states:
+
+- **active** — present in the registry, listed in the sidebar, chattable.
+- **archived** — present and **viewable read-only**, but detached from its agent
+  generation. Set via `POST /api/sessions/:id/archive` (and reversed by
+  `…/unarchive`). The `Archived` flag lives on both `SessionMeta`
+  ([internal/sessions/sessions.go](internal/sessions/sessions.go)) and
+  `ConversationFile` ([internal/sessions/history.go](internal/sessions/history.go),
+  the durable source of truth); `Registry.SetArchived` mirrors the in-memory
+  flag and persists it asynchronously via `SetConversationArchived`. Archiving
+  calls `PushMgr.Stop` + `Manager.Release`; unarchiving re-`Pin`s and re-`Watch`es.
+  The turn handler (`handleMessages` in [server/sse.go](server/sse.go)) rejects
+  new turns on an archived session with `409 Conflict` (read-only guard); the TUI
+  `send` path blocks them similarly.
+- **deleted** — registry entry removed, conversation + agent log files
+  hard-deleted (unchanged behaviour).
+
+**GC retention invariant**: archived sessions stay in `Registry.List()`, so the
+GC ([server/gc.go](server/gc.go) `activeFromRegistry`) treats them as live and
+retains their files — keeping them available for semantic-recall indexing.
+
+Both UI surfaces render archived sessions in a **collapsible panel above the
+Settings button**: the Web UI `#archived-panel` ([web/index.html](web/index.html),
+[web/app.js](web/app.js) `renderSessions`/`archiveSession`/`unarchiveSession`,
+collapse state in `localStorage`), and the TUI `archivedPane` in the left column
+([internal/tui/tui.go](internal/tui/tui.go), toggled with **Ctrl-A**; `a` archives
+the highlighted session, `u` unarchives, `d` deletes). Viewing an archived session
+disables the composer in both surfaces.
 
 ### Background mailbox delivery
 

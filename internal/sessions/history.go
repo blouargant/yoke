@@ -30,6 +30,7 @@ type ConversationFile struct {
 	Title     string             `json:"title,omitempty"`
 	Squad     string             `json:"squad,omitempty"`
 	Harvested bool               `json:"harvested,omitempty"`
+	Archived  bool               `json:"archived,omitempty"`
 	Turns     []ConversationTurn `json:"turns"`
 }
 
@@ -112,6 +113,17 @@ func SetConversationHarvested(sessionID string, v bool) error {
 	return SaveConversationFile(sessionID, f)
 }
 
+// SetConversationArchived persists the Archived flag to disk without touching
+// the conversation turns. Called when a session is archived or unarchived.
+func SetConversationArchived(sessionID string, v bool) error {
+	f, err := LoadConversationFile(sessionID)
+	if err != nil || f == nil {
+		f = &ConversationFile{}
+	}
+	f.Archived = v
+	return SaveConversationFile(sessionID, f)
+}
+
 // SetConversationSquad persists the squad name to disk without touching the
 // conversation turns. Called when a new session is first created so the
 // choice survives a server restart.
@@ -186,6 +198,7 @@ func LoadPersistedSessions() []*SessionMeta {
 			Title:      f.Title,
 			Squad:      f.Squad,
 			Harvested:  f.Harvested,
+			Archived:   f.Archived,
 			UserID:     DefaultUserID,
 			CreatedAt:  f.Turns[0].At,
 			LastUsedAt: f.Turns[len(f.Turns)-1].At,

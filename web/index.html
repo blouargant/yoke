@@ -37,26 +37,34 @@
     <div id="sidebar-header">
       <span class="app-name">Yoke</span>
       <div class="sidebar-header-btns">
-        <button id="sidebar-toggle" type="button" title="Hide sidebar">
+        <button id="sidebar-toggle" type="button" data-tip="Hide sidebar">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
         </button>
       </div>
     </div>
     <div id="new-chat-wrap">
-      <button id="new-chat" type="button" title="New chat">
+      <button id="new-chat" type="button" data-tip="New chat">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
         <span class="new-chat-text">
           <span class="new-chat-label">New Chat</span>
           <span class="new-chat-sub" hidden></span>
         </span>
       </button>
-      <button id="squad-toggle" type="button" title="Choose squad" aria-haspopup="true" aria-expanded="false" hidden>
+      <button id="squad-toggle" type="button" data-tip="Choose squad" aria-haspopup="true" aria-expanded="false" hidden>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
       </button>
       <div id="squad-menu" role="menu" hidden></div>
     </div>
     <div class="sidebar-section-label">Sessions</div>
     <ul id="session-list" aria-label="sessions"></ul>
+    <div id="archived-panel" class="collapsed" hidden>
+      <div id="archived-header" role="button" tabindex="0" aria-expanded="false" data-tip="Toggle archived sessions">
+        <svg class="archived-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+        <span class="sidebar-section-label">Archived</span>
+        <span id="archived-count" class="archived-count"></span>
+      </div>
+      <ul id="archived-list" aria-label="archived sessions"></ul>
+    </div>
     <div id="settings-menu" hidden>
       <div class="sidebar-section-label">Settings</div>
       <ul id="settings-menu-list" aria-label="settings sections"></ul>
@@ -86,7 +94,7 @@
         <textarea id="prompt" rows="3" placeholder="Message the agent… (Enter to send)"></textarea>
         <div class="composer-actions">
           <div id="attach-wrap">
-            <button id="attach-btn" type="button" title="Attach files">
+            <button id="attach-btn" type="button" data-tip="Attach files">
               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
               </svg>
@@ -108,14 +116,14 @@
               </button>
             </div>
           </div>
-          <button id="edit-mode-btn" type="button" title="Toggle Enter key: send vs new line">
+          <button id="edit-mode-btn" type="button" data-tip="Toggle Enter key: send vs new line">
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M4 7V4h16v3"/>
               <path d="M9 20h6"/>
               <path d="M12 4v16"/>
             </svg>
           </button>
-          <button id="slash-btn" type="button" title="Slash commands (/)">/</button>
+          <button id="slash-btn" type="button" data-tip="Slash commands (/)">/</button>
           <span id="ctx-ring-wrap">
             <svg id="ctx-ring-svg" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
               <circle class="ctx-ring-track" cx="12" cy="12" r="9" fill="none" stroke-width="2.5"/>

@@ -39,6 +39,12 @@ type SessionMeta struct {
 	// new activity (Touch) clears the flag. The flag is persisted in the
 	// conversation file so it survives server restarts.
 	Harvested bool `json:"harvested,omitempty"`
+	// Archived marks a session as set-aside-but-kept: not active, but still
+	// present and viewable (read-only). Archived sessions stay in the registry
+	// (so the GC retains their files and they keep feeding semantic-recall
+	// indexes) and are surfaced in a separate panel by the UI surfaces. The flag
+	// is persisted in the conversation file so it survives server restarts.
+	Archived bool `json:"archived,omitempty"`
 }
 
 // Registry is the in-memory session index. It is safe for concurrent
@@ -187,6 +193,28 @@ func (r *Registry) MarkHarvested(id string) {
 			log.Printf("harvester: failed to persist harvested flag for session %s: %v", id, err)
 		}
 	}()
+}
+
+// SetArchived sets (or clears) the archived flag on a session. The flag is
+// persisted to disk asynchronously so it survives server restarts. Returns
+// true when a session was found. Archived sessions remain in the registry so
+// the GC keeps their files (see server/gc.go activeFromRegistry).
+func (r *Registry) SetArchived(id string, v bool) bool {
+	r.mu.Lock()
+	m, ok := r.items[id]
+	if ok {
+		m.Archived = v
+	}
+	r.mu.Unlock()
+	if !ok {
+		return false
+	}
+	go func() {
+		if err := SetConversationArchived(id, v); err != nil {
+			log.Printf("sessions: failed to persist archived flag for session %s: %v", id, err)
+		}
+	}()
+	return true
 }
 
 // Delete removes the session and its conversation file. Returns true

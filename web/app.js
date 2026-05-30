@@ -109,6 +109,10 @@ const els = {
   squadToggle:   document.getElementById("squad-toggle"),
   squadMenu:     document.getElementById("squad-menu"),
   list:          document.getElementById("session-list"),
+  archivedPanel: document.getElementById("archived-panel"),
+  archivedHeader:document.getElementById("archived-header"),
+  archivedList:  document.getElementById("archived-list"),
+  archivedCount: document.getElementById("archived-count"),
   promptHeader:  document.getElementById("prompt-header"),
   transcript:    document.getElementById("transcript"),
   composerWrap:  document.getElementById("composer-wrap"),
@@ -175,6 +179,7 @@ const ctxBrowserSelected = new Map(); // path → {name, path, size}
 const sessionAbortCtrls = new Map(); // sessionId → AbortController
 const sessionSending    = new Set(); // sessionIds currently streaming
 const sessionStatus     = new Map(); // sessionId → status string
+const archivedSessions  = new Set(); // sessionIds in the archived (read-only) state
 
 // ─── Per-session push event subscriptions ────────────────────────────────────
 // Each open session has a persistent SSE connection to /api/sessions/:id/events
@@ -248,12 +253,26 @@ function setSessionStatus(sessionId, s) {
 
 function applySessionUI(id) {
   const active = sessionSending.has(id);
-  els.send.disabled   = active;
+  const archived = archivedSessions.has(id);
+  els.send.disabled   = active || archived;
   els.cancel.disabled = !active;
   setStatus(sessionStatus.get(id) || "");
   if (id === activeSessionId) {
+    setComposerReadOnly(archived);
     setCtxRingSpinning(active);
     renderCtxRing(id);
+  }
+}
+
+// setComposerReadOnly disables the composer when viewing an archived session.
+// Archived sessions are view-only; the user must unarchive to chat again.
+function setComposerReadOnly(readonly) {
+  if (els.composerWrap) els.composerWrap.classList.toggle("archived-readonly", readonly);
+  if (els.prompt) {
+    els.prompt.disabled = readonly;
+    els.prompt.placeholder = readonly
+      ? "Session archived — unarchive to continue the conversation"
+      : "Message the agent… (Enter to send)";
   }
 }
 
@@ -278,7 +297,7 @@ function renderCtxRing(sessionId) {
     els.ctxRingFill.style.strokeDashoffset = CTX_RING_CIRCUMFERENCE;
     els.ctxRingSvg.dataset.zone = "ok";
     els.ctxRingWrap.classList.remove("has-data");
-    els.ctxRingWrap.title = "Context window — click for details";
+    els.ctxRingWrap.dataset.tip = "Context window — click for details";
     return;
   }
   const { tokens_used, soft_limit, hard_limit, window_tokens } = usage;
@@ -288,7 +307,7 @@ function renderCtxRing(sessionId) {
   els.ctxRingSvg.dataset.zone = tokens_used >= hard_limit ? "danger"
     : tokens_used >= soft_limit ? "warn" : "ok";
   els.ctxRingWrap.classList.add("has-data");
-  els.ctxRingWrap.title = `Context: ${pct}% used — click for more information`;
+  els.ctxRingWrap.dataset.tip = `Context: ${pct}% used — click for more information`;
 }
 
 function renderCtxPopup(sessionId) {
@@ -1047,7 +1066,7 @@ function appendAssistantBubble(container) {
 
   const copyBtn = document.createElement("button");
   copyBtn.className = "copy-msg-btn";
-  copyBtn.title = "Copy message";
+  copyBtn.dataset.tip = "Copy message";
   copyBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
   copyBtn.addEventListener("click", () => {
     const text = bubble._rawText || bubble.textContent || "";
@@ -1655,56 +1674,99 @@ async function loadSessions() {
   } catch (e) { console.error(e); }
 }
 
+// SVG icon markup reused across session rows.
+const ICON_RENAME = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+const ICON_DELETE = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>`;
+const ICON_ARCHIVE = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>`;
+const ICON_UNARCHIVE = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><path d="M12 16V9"/><polyline points="9 12 12 9 15 12"/></svg>`;
+
+// buildSessionRow renders one session <li>. Active rows offer rename + archive +
+// delete; archived rows offer unarchive + delete and route a click to a
+// read-only view.
+function buildSessionRow(s, { archived }) {
+  const li = document.createElement("li");
+  li.dataset.id = s.id;
+  if (s.id === activeSessionId) li.classList.add("active");
+  const ts = new Date(s.last_used_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const displayName = s.title || s.id;
+
+  if (!archived && sessionSending.has(s.id)) li.classList.add("session-busy");
+  // Show a squad badge only when the session uses a non-default squad,
+  // so single-squad / default setups stay visually quiet.
+  const showBadge = s.squad && s.squad !== defaultSquadName;
+  const badgeHtml = showBadge
+    ? `<span class="session-squad-badge" data-tip="Squad: ${escHtml(s.squad)}">${escHtml(s.squad)}</span>`
+    : "";
+  const topActions = archived
+    ? ""
+    : `<button class="session-action-btn rename-btn" data-tip="Rename" tabindex="-1">${ICON_RENAME}</button>`;
+  const deleteBtn = `<button class="session-action-btn delete-btn" data-tip="Delete" tabindex="-1">${ICON_DELETE}</button>`;
+  const setAsideBtn = archived
+    ? `<button class="session-action-btn unarchive-btn" data-tip="Unarchive" tabindex="-1">${ICON_UNARCHIVE}</button>`
+    : `<button class="session-action-btn archive-btn" data-tip="Archive" tabindex="-1">${ICON_ARCHIVE}</button>`;
+  // Active rows put Archive rightmost (delete → archive); archived rows keep
+  // Delete rightmost (unarchive → delete).
+  const bottomActions = archived ? `${setAsideBtn}${deleteBtn}` : `${deleteBtn}${setAsideBtn}`;
+  li.innerHTML = `
+    <div class="session-name-row">
+      <span class="session-busy-dot"></span>
+      <div class="session-name" title="${escHtml(displayName)}">${escHtml(displayName)}</div>
+      <div class="session-actions">${topActions}</div>
+    </div>
+    <div class="session-bottom-row">
+      ${badgeHtml}
+      <span class="meta">${s.turns} turn${s.turns === 1 ? "" : "s"} · ${ts}</span>
+      <div class="session-actions">${bottomActions}</div>
+    </div>
+  `;
+
+  li.addEventListener("click", (e) => {
+    if (e.target.closest(".session-actions")) return;
+    selectSession(s.id);
+  });
+  const renameBtn = li.querySelector(".rename-btn");
+  if (renameBtn) renameBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    startRename(li, s.id, s.title || "");
+  });
+  const archiveBtn = li.querySelector(".archive-btn");
+  if (archiveBtn) archiveBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    archiveSession(s.id);
+  });
+  const unarchiveBtn = li.querySelector(".unarchive-btn");
+  if (unarchiveBtn) unarchiveBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    unarchiveSession(s.id);
+  });
+  li.querySelector(".delete-btn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    deleteSession(s.id, li);
+  });
+  return li;
+}
+
 function renderSessions(sessions) {
-  els.list.innerHTML = "";
+  // Keep the archived-state index in sync so the composer read-only guard and
+  // applySessionUI can consult it without re-fetching.
+  archivedSessions.clear();
+  const active = [];
+  const archived = [];
   for (const s of sessions) {
-    const li = document.createElement("li");
-    li.dataset.id = s.id;
-    if (s.id === activeSessionId) li.classList.add("active");
-    const ts = new Date(s.last_used_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    const displayName = s.title || s.id;
-
-    if (sessionSending.has(s.id)) li.classList.add("session-busy");
-    // Show a squad badge only when the session uses a non-default squad,
-    // so single-squad / default setups stay visually quiet.
-    const showBadge = s.squad && s.squad !== defaultSquadName;
-    const badgeHtml = showBadge
-      ? `<span class="session-squad-badge" title="Squad: ${escHtml(s.squad)}">${escHtml(s.squad)}</span>`
-      : "";
-    li.innerHTML = `
-      <div class="session-name-row">
-        <span class="session-busy-dot"></span>
-        <div class="session-name" title="${escHtml(displayName)}">${escHtml(displayName)}</div>
-        ${badgeHtml}
-      </div>
-      <div class="session-bottom-row">
-        <span class="meta">${s.turns} turn${s.turns === 1 ? "" : "s"} · ${ts}</span>
-        <div class="session-actions">
-          <button class="session-action-btn rename-btn" title="Rename" tabindex="-1">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-          </button>
-          <button class="session-action-btn delete-btn" title="Delete" tabindex="-1">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
-          </button>
-        </div>
-      </div>
-    `;
-
-    li.addEventListener("click", (e) => {
-      if (e.target.closest(".session-actions")) return;
-      selectSession(s.id);
-    });
-    li.querySelector(".rename-btn").addEventListener("click", (e) => {
-      e.stopPropagation();
-      startRename(li, s.id, s.title || "");
-    });
-    li.querySelector(".delete-btn").addEventListener("click", (e) => {
-      e.stopPropagation();
-      deleteSession(s.id, li);
-    });
-
-    els.list.appendChild(li);
+    if (s.archived) { archived.push(s); archivedSessions.add(s.id); }
+    else active.push(s);
   }
+
+  els.list.innerHTML = "";
+  for (const s of active) els.list.appendChild(buildSessionRow(s, { archived: false }));
+
+  els.archivedList.innerHTML = "";
+  for (const s of archived) els.archivedList.appendChild(buildSessionRow(s, { archived: true }));
+  els.archivedPanel.hidden = archived.length === 0;
+  els.archivedCount.textContent = archived.length ? `(${archived.length})` : "";
+
+  // Reflect the active session's (possibly changed) archived state on the composer.
+  if (activeSessionId) applySessionUI(activeSessionId);
 }
 
 function setSessionBusy(sessionId, busy) {
@@ -1741,6 +1803,42 @@ async function deleteSession(id, li) {
     li.remove();
   } catch (e) {
     console.error("failed to delete session:", e);
+  }
+}
+
+// archiveSession sets a session aside (read-only). Its history stays viewable
+// in the archived panel; the server detaches it from its agent generation.
+async function archiveSession(id) {
+  try {
+    await apiFetch(`/api/sessions/${id}/archive`, { method: "POST" });
+    unsubscribeSessionEvents(id);
+    // Clear the chat panel like a delete does — an archived session is set
+    // aside, so it shouldn't stay open in the transcript. Its DOM stays cached
+    // in sessionContainers, so clicking it in the archived panel re-mounts the
+    // read-only history.
+    if (activeSessionId === id) {
+      activeSessionId = null;
+      clearPinnedPrompt();
+      mountSession(null);
+      setStatus("");
+    }
+    await loadSessions();
+  } catch (e) {
+    console.error("failed to archive session:", e);
+  }
+}
+
+// unarchiveSession restores an archived session to active and re-enables chat.
+async function unarchiveSession(id) {
+  try {
+    await apiFetch(`/api/sessions/${id}/unarchive`, { method: "POST" });
+    await loadSessions();
+    if (activeSessionId === id) {
+      subscribeSessionEvents(id);
+      applySessionUI(id);
+    }
+  } catch (e) {
+    console.error("failed to unarchive session:", e);
   }
 }
 
@@ -2882,6 +2980,80 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !els.squadMenu.hidden) closeSquadMenu();
 });
 
+// ─── Hover tooltips (data-tip) ────────────────────────────────────────────────
+// A single body-appended `#tip-layer` element renders every `[data-tip]`
+// tooltip. Because it is `position: fixed`, it escapes the sidebar /
+// archived-list `overflow` clipping and sits above every panel — fixing the
+// case where an action-button tooltip was masked by the surrounding panel.
+// Placement is *above* the target by default, flipping below only when the
+// target sits too close to the viewport top to fit. `.model-status-dot` keeps
+// its dedicated CSS pseudo tooltip, so it is excluded here.
+function initTooltips() {
+  const layer = document.createElement("div");
+  layer.id = "tip-layer";
+  document.body.appendChild(layer);
+
+  let current = null; // the [data-tip] element the tooltip is tracking
+
+  function place() {
+    if (!current) return;
+    const r = current.getBoundingClientRect();
+    const tw = layer.offsetWidth;
+    const th = layer.offsetHeight;
+    const gap = 8;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    // Prefer above; flip below when there isn't room near the top.
+    let below = false;
+    let top = r.top - th - gap;
+    if (top < 4) { below = true; top = r.bottom + gap; }
+    if (below && top + th > vh - 4) { below = false; top = r.top - th - gap; }
+    layer.classList.toggle("below", below);
+
+    // Centre horizontally over the target, clamped to the viewport.
+    const center = r.left + r.width / 2;
+    let left = center - tw / 2;
+    left = Math.max(4, Math.min(left, vw - tw - 4));
+    layer.style.left = left + "px";
+    layer.style.top = top + "px";
+
+    // Keep the arrow pointing at the target's centre even after clamping.
+    const arrowX = Math.max(8, Math.min(center - left, tw - 8));
+    layer.style.setProperty("--tip-arrow-x", arrowX + "px");
+  }
+
+  function show(el) {
+    current = el;
+    layer.textContent = el.getAttribute("data-tip") || "";
+    layer.classList.remove("below");
+    place();
+    layer.classList.add("show");
+  }
+  function hide() {
+    current = null;
+    layer.classList.remove("show");
+  }
+
+  document.addEventListener("pointerover", (e) => {
+    const el = e.target.closest && e.target.closest("[data-tip]");
+    if (!el || el.classList.contains("model-status-dot")) { if (current) hide(); return; }
+    if (el === current) return;
+    show(el);
+  });
+  document.addEventListener("pointerout", (e) => {
+    if (!current) return;
+    const to = e.relatedTarget;
+    if (to && to.closest && to.closest("[data-tip]") === current) return;
+    hide();
+  });
+  // Any layout shift invalidates the cached rect — drop the tooltip.
+  window.addEventListener("scroll", hide, true);
+  window.addEventListener("resize", hide);
+  document.addEventListener("click", hide, true);
+}
+initTooltips();
+
 els.composer.addEventListener("submit", (e) => { e.preventDefault(); sendMessage(); });
 
 // Attach button toggles the popup menu
@@ -3124,7 +3296,7 @@ els.cancel.addEventListener("click", () => {
 });
 function updateEditModeBtn() {
   els.editModeBtn.classList.toggle("active", !sendOnEnter);
-  els.editModeBtn.title = sendOnEnter
+  els.editModeBtn.dataset.tip = sendOnEnter
     ? "Edit mode: switch to Enter=new line, Ctrl+Enter=send"
     : "Send mode: switch to Enter=send, Ctrl+Enter=new line";
   els.prompt.placeholder = sendOnEnter
@@ -3338,6 +3510,25 @@ document.addEventListener("mouseup", () => {
 els.sidebarToggle.addEventListener("click", () => {
   if (els.sidebar.classList.contains("collapsed")) expandSidebar();
   else collapseSidebar();
+});
+
+// ─── Archived sessions panel collapse ─────────────────────────────────────────
+
+const ARCHIVED_COL_KEY = "agent_archived_collapsed";
+function applyArchivedCollapse(collapsed) {
+  els.archivedPanel.classList.toggle("collapsed", collapsed);
+  els.archivedHeader.setAttribute("aria-expanded", String(!collapsed));
+}
+// Default collapsed; persists the user's choice across reloads.
+applyArchivedCollapse(localStorage.getItem(ARCHIVED_COL_KEY) !== "0");
+function toggleArchivedPanel() {
+  const collapsed = !els.archivedPanel.classList.contains("collapsed");
+  applyArchivedCollapse(collapsed);
+  localStorage.setItem(ARCHIVED_COL_KEY, collapsed ? "1" : "0");
+}
+els.archivedHeader.addEventListener("click", toggleArchivedPanel);
+els.archivedHeader.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleArchivedPanel(); }
 });
 
 // ─── Context ring popup ───────────────────────────────────────────────────────

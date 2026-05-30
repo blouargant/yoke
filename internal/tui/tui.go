@@ -358,6 +358,17 @@ func Run(ctx context.Context, cfg Config) error {
 	// require a tview version bump). Index aligns with sessionsPane.
 	var sessionIDsInPane []string
 
+	// ── Archived sessions pane (collapsible) ────────────────────────────
+	// Sits below the active session list in the left column. Hidden by
+	// default; toggled with Ctrl-A. Archived sessions are read-only.
+	archivedPane := tview.NewList().
+		ShowSecondaryText(true).
+		SetHighlightFullLine(true).
+		SetSelectedTextColor(tcell.ColorBlack).
+		SetSelectedBackgroundColor(tcell.ColorYellow)
+	archivedPane.SetBorder(true).SetTitle(" Archived ").SetTitleAlign(tview.AlignLeft)
+	var archivedIDsInPane []string
+
 	// ── Left pane: trace ────────────────────────────────────────────────
 	trace := tview.NewTextView().
 		SetDynamicColors(true).
@@ -370,13 +381,14 @@ func Run(ctx context.Context, cfg Config) error {
 	// sessions → trace so the user can scroll any panel with arrow keys /
 	// Page Up / Page Down. Esc returns focus to the input field; Ctrl-C
 	// always quits.
-	focusList := []tview.Primitive{input, chat, sessionsPane, trace}
+	focusList := []tview.Primitive{input, chat, sessionsPane, trace, archivedPane}
 	focusIdx := 0
 	setFocus := func(idx int) {
 		focusIdx = idx
 		chat.SetBorderColor(tcell.ColorDefault)
 		trace.SetBorderColor(tcell.ColorDefault)
 		sessionsPane.SetBorderColor(tcell.ColorDefault)
+		archivedPane.SetBorderColor(tcell.ColorDefault)
 		switch idx {
 		case 1: // chat
 			chat.SetBorderColor(tcell.ColorYellow)
@@ -384,6 +396,8 @@ func Run(ctx context.Context, cfg Config) error {
 			sessionsPane.SetBorderColor(tcell.ColorYellow)
 		case 3: // trace
 			trace.SetBorderColor(tcell.ColorYellow)
+		case 4: // archived
+			archivedPane.SetBorderColor(tcell.ColorYellow)
 		}
 		app.SetFocus(focusList[idx])
 	}
@@ -463,8 +477,28 @@ func Run(ctx context.Context, cfg Config) error {
 	// trace pane is opt-in via Ctrl-T because most users don't need
 	// per-tool-call diagnostics and the chat pane benefits from the
 	// extra width.
+	// Left column stacks the active session list over a collapsible archived
+	// list. The archived pane is removed from the flex when hidden (mirrors
+	// the trace-pane toggle) so it never steals vertical space when empty.
+	leftCol := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(sessionsPane, 0, 1, false)
+	archivedVisible := false
+	setArchivedVisible := func(show bool) {
+		if show == archivedVisible {
+			return
+		}
+		archivedVisible = show
+		if show {
+			leftCol.AddItem(archivedPane, 0, 1, false)
+		} else {
+			leftCol.RemoveItem(archivedPane)
+			if focusIdx == 4 {
+				setFocus(0)
+			}
+		}
+	}
 	main := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(sessionsPane, 28, 0, false).
+		AddItem(leftCol, 28, 0, false).
 		AddItem(rightPane, 0, 1, true)
 	traceVisible := false
 	setTraceVisible := func(show bool) {
@@ -757,10 +791,11 @@ func Run(ctx context.Context, cfg Config) error {
 		// current session after the list is rebuilt.
 		cur := current.Load()
 		sessionsPane.Clear()
+		archivedPane.Clear()
 		sessionIDsInPane = sessionIDsInPane[:0]
-		list := cfg.Sessions.List()
+		archivedIDsInPane = archivedIDsInPane[:0]
 		selectIdx := 0
-		for i, m := range list {
+		row := func(m *sessions.SessionMeta) (string, string) {
 			label := m.ID
 			if m.Title != "" {
 				label = m.Title
@@ -771,15 +806,25 @@ func Run(ctx context.Context, cfg Config) error {
 			}
 			secondary := fmt.Sprintf("[gray]%s · %d turn(s) · %s[-]",
 				squad, m.Turns, m.LastUsedAt.Format("01-02 15:04"))
+			return label, secondary
+		}
+		for _, m := range cfg.Sessions.List() {
+			label, secondary := row(m)
+			if m.Archived {
+				archivedPane.AddItem(label, secondary, 0, nil)
+				archivedIDsInPane = append(archivedIDsInPane, m.ID)
+				continue
+			}
+			if cur != nil && m.ID == cur.ID {
+				selectIdx = len(sessionIDsInPane)
+			}
 			sessionsPane.AddItem(label, secondary, 0, nil)
 			sessionIDsInPane = append(sessionIDsInPane, m.ID)
-			if cur != nil && m.ID == cur.ID {
-				selectIdx = i
-			}
 		}
 		if len(sessionIDsInPane) > 0 {
 			sessionsPane.SetCurrentItem(selectIdx)
 		}
+		archivedPane.SetTitle(fmt.Sprintf(" Archived (%d) ", len(archivedIDsInPane)))
 	}
 
 	// chatANSIWriter renders one persisted turn into the chat pane using
@@ -880,6 +925,40 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	}
 
+	archiveSession := func(id string) {
+		if id == "" || !cfg.Sessions.SetArchived(id, true) {
+			return
+		}
+		cfg.Manager.Release(id)
+		// If the archived session was current, move to a remaining active one
+		// (or a fresh session) so the chat pane is never left read-only-stuck.
+		cur := current.Load()
+		if cur != nil && cur.ID == id {
+			var next string
+			for _, m := range cfg.Sessions.List() {
+				if !m.Archived {
+					next = m.ID
+					break
+				}
+			}
+			if next != "" {
+				switchSession(next)
+			} else {
+				createSession(toolkitagent.DefaultSquadName)
+			}
+		} else {
+			refreshSessions()
+		}
+	}
+
+	unarchiveSession := func(id string) {
+		if id == "" || !cfg.Sessions.SetArchived(id, false) {
+			return
+		}
+		cfg.Manager.Pin(id)
+		switchSession(id)
+	}
+
 	chooseSquadModal := func(onPick func(squad string)) {
 		squads := availableSquads()
 		modal := tview.NewModal().SetText("Select squad for new session:")
@@ -911,11 +990,41 @@ func Run(ctx context.Context, cfg Config) error {
 		case 'n', 'N':
 			chooseSquadModal(func(squad string) { createSession(squad) })
 			return nil
+		case 'a', 'A':
+			idx := sessionsPane.GetCurrentItem()
+			if idx >= 0 && idx < len(sessionIDsInPane) {
+				archiveSession(sessionIDsInPane[idx])
+			}
+			return nil
 		case 'd', 'D':
 			idx := sessionsPane.GetCurrentItem()
 			if idx >= 0 && idx < len(sessionIDsInPane) {
 				deleteSession(sessionIDsInPane[idx])
 			}
+			return nil
+		}
+		return ev
+	})
+
+	// Archived pane: Enter views read-only, u/U unarchives, d/D deletes.
+	archivedPane.SetSelectedFunc(func(idx int, _, _ string, _ rune) {
+		if idx < 0 || idx >= len(archivedIDsInPane) {
+			return
+		}
+		switchSession(archivedIDsInPane[idx])
+		setFocus(1) // focus chat so the user can read the history
+	})
+	archivedPane.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		idx := archivedPane.GetCurrentItem()
+		if idx < 0 || idx >= len(archivedIDsInPane) {
+			return ev
+		}
+		switch ev.Rune() {
+		case 'u', 'U':
+			unarchiveSession(archivedIDsInPane[idx])
+			return nil
+		case 'd', 'D':
+			deleteSession(archivedIDsInPane[idx])
 			return nil
 		}
 		return ev
@@ -1108,8 +1217,9 @@ func Run(ctx context.Context, cfg Config) error {
 			appendChat("  [aqua]/upload <path>[-]        Stage a file under the current session's uploads dir.\n")
 			appendChat("  [aqua]/new[-]                  Create a new session (squad picker).\n")
 			appendChat("  [aqua]/help[-]                Show this help.\n")
-			appendChat("\nSession sidebar (Tab to focus): [aqua]n[-] new, [aqua]d[-] delete, [aqua]Enter[-] switch.\n")
-			appendChat("Global: [aqua]Ctrl-S[-] settings · [aqua]Ctrl-T[-] toggle trace · [aqua]Ctrl-R[-] hot-reload · [aqua]Ctrl-L[-] clear chat · [aqua]Ctrl-C[-] quit.\n")
+			appendChat("\nSession sidebar (Tab to focus): [aqua]n[-] new, [aqua]a[-] archive, [aqua]d[-] delete, [aqua]Enter[-] switch.\n")
+			appendChat("Archived pane (Ctrl-A): [aqua]Enter[-] view (read-only), [aqua]u[-] unarchive, [aqua]d[-] delete.\n")
+			appendChat("Global: [aqua]Ctrl-S[-] settings · [aqua]Ctrl-T[-] toggle trace · [aqua]Ctrl-A[-] toggle archived · [aqua]Ctrl-R[-] hot-reload · [aqua]Ctrl-L[-] clear chat · [aqua]Ctrl-C[-] quit.\n")
 		default:
 			appendChat("\n[::b]assistant[-]\n")
 			appendChat("[yellow]Unknown shortcut:[-] /%s (try /help)\n", cmd)
@@ -1139,6 +1249,11 @@ func Run(ctx context.Context, cfg Config) error {
 		cur := current.Load()
 		if cur == nil {
 			appendChat("\n[red]No active session — press 'n' on the Sessions pane to create one.[-]\n")
+			return
+		}
+		// Archived sessions are read-only: block new turns until unarchived.
+		if meta, ok := cfg.Sessions.Get(cur.ID); ok && meta.Archived {
+			appendChat("\n[yellow]Session is archived — open the Archived pane (Ctrl-A) and press 'u' to unarchive before continuing.[-]\n")
 			return
 		}
 		squadInst := cfg.Manager.LookupSquad(cur.ID, cur.Squad)
@@ -1286,6 +1401,9 @@ func Run(ctx context.Context, cfg Config) error {
 			if idx == 3 && !traceVisible {
 				continue
 			}
+			if idx == 4 && !archivedVisible {
+				continue
+			}
 			setFocus(idx)
 			return
 		}
@@ -1326,6 +1444,12 @@ func Run(ctx context.Context, cfg Config) error {
 			return nil
 		case tcell.KeyCtrlT:
 			setTraceVisible(!traceVisible)
+			return nil
+		case tcell.KeyCtrlA:
+			setArchivedVisible(!archivedVisible)
+			if archivedVisible && len(archivedIDsInPane) > 0 {
+				setFocus(4) // jump into the archived list once revealed
+			}
 			return nil
 		case tcell.KeyCtrlS:
 			// Open the Settings overlay. The overlay installs its own

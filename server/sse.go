@@ -36,6 +36,11 @@ func handleMessages(d serverDeps) gin.HandlerFunc {
 			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 			return
 		}
+		// Archived sessions are read-only: reject new turns until unarchived.
+		if meta.Archived {
+			c.JSON(http.StatusConflict, gin.H{"error": "session is archived; unarchive it to continue the conversation"})
+			return
+		}
 
 		var req messageRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
