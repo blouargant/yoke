@@ -2959,6 +2959,51 @@ const BASE_PATH = window.BASE_PATH || "";
     toolSection.appendChild(toolGrid);
     body.appendChild(toolSection);
 
+    // ── Parallelism (max_instances) ──
+    // Only meaningful for sub-agents: it caps how many invocations the leader
+    // may fan out in a single tool call. The leader is never fanned out and the
+    // curator is a process-wide hook (both excluded by buildSubAgents), so the
+    // setting is inert for them — hide the control.
+    if (!isLeader && (a.name || "").toLowerCase() !== "curator") {
+      const parSec = document.createElement("section");
+      parSec.className = "agent-detail-section";
+      const parHdr = document.createElement("div");
+      parHdr.className = "agent-section-hdr";
+      parHdr.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="3" x2="6" y2="21"/><line x1="12" y1="3" x2="12" y2="21"/><line x1="18" y1="3" x2="18" y2="21"/></svg><h3>Parallelism</h3>`;
+      parSec.appendChild(parHdr);
+      const parBody = document.createElement("div");
+      parBody.className = "agent-gen-grid";
+      const parField = document.createElement("div");
+      parField.className = "agent-gen-field";
+      const parLbl = document.createElement("label");
+      parLbl.className = "agent-gen-label";
+      parLbl.textContent = "Max parallel instances";
+      const parInp = document.createElement("input");
+      parInp.type = "number"; parInp.min = "1"; parInp.step = "1";
+      parInp.className = "agent-gen-input";
+      parInp.value = String(Math.max(1, parseInt(a.max_instances, 10) || 1));
+      parInp.title = "1 = run one at a time (default). >1 lets the leader dispatch up to this many independent tasks to this agent in one parallel batch call.";
+      const applyMax = () => {
+        let n = parseInt(parInp.value, 10);
+        if (!Number.isFinite(n) || n < 1) n = 1;
+        parInp.value = String(n);
+        // Keep the file clean: only persist when it opts into parallelism.
+        if (n > 1) a.max_instances = n; else delete a.max_instances;
+        onChange();
+      };
+      parInp.addEventListener("input", applyMax);
+      parInp.addEventListener("change", applyMax);
+      const parHint = document.createElement("p");
+      parHint.className = "agent-gen-hint";
+      parHint.textContent = "1 = serial (one at a time). Higher values let the leader run that many independent tasks for this agent in parallel.";
+      parField.appendChild(parLbl);
+      parField.appendChild(parInp);
+      parField.appendChild(parHint);
+      parBody.appendChild(parField);
+      parSec.appendChild(parBody);
+      body.appendChild(parSec);
+    }
+
     // ── Skills ──
     const skillsSec = document.createElement("section");
     skillsSec.className = "agent-detail-section" + (cur.has("Skill") ? "" : " section-inactive");

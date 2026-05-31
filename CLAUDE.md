@@ -114,9 +114,12 @@ and returns `{ results: [ … ] }`. Because ADK dispatches function calls via
 `req.Tools[name]`, the parallel tool's `ProcessRequest` packs **itself**
 (not the inner) via the local `packToolDecl` (a copy of ADK's unexported
 `toolutils.PackTool`) so the model gets the batch declaration and the runner
-dispatches the fan-out. `max_instances` defaults to `1` and is per-agent
-(JSON only — no web-UI field yet, but it round-trips through the editor
-save). The curator stays a single per-generation hook listening across every
+dispatches the fan-out. `max_instances` defaults to `1` and is per-agent.
+The web UI Settings → Agent panel exposes it as a **Max parallel instances**
+numeric field (a `Parallelism` section, hidden for the leader and curator
+since both are excluded from fan-out); the value round-trips through the
+editor save and the GET only surfaces it when `> 1` to keep agent.json clean.
+The curator stays a single per-generation hook listening across every
 squad.
 
 **Soft-skill reflection pipeline** — at `EventSessionEnd`, [agent/load_recorder.go](agent/load_recorder.go)
