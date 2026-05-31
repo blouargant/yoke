@@ -108,6 +108,7 @@ Common fields:
 | `model_ref` | References a key in `models` for provider/model/base_url/api_key. |
 | `tools` | List of tool group names mounted on this agent (`fs`, `mcp`, `web`, `skills`, `softskills`, `calc`, `registries`, ...). |
 | `skills_dir` | Optional per-agent skills directory (overrides the global one). |
+| `max_instances` | Max parallel invocations the leader may launch in one tool call. `1` (default) keeps the classic one-at-a-time tool. `> 1` exposes a batch/fan-out tool — the leader passes a `tasks` array (up to `max_instances` independent jobs) that run concurrently and return one result per task. Per-agent; JSON-only for now (no web-UI field). |
 
 `instruction.md` is the agent's system prompt. If the file is missing,
 the agent falls back to `registry/agents/default.md`.

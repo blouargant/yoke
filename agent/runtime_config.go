@@ -45,6 +45,10 @@ type AgentEntry struct {
 	MCPServers            []string `json:"mcp_servers"`
 	A2AAgents             []string `json:"a2a_agents,omitempty"`
 	PermissionsConfigPath string   `json:"permissions_config_path"`
+	// MaxInstances caps how many invocations of this sub-agent the leader may
+	// run in parallel from a single tool call. <= 1 (the default) keeps the
+	// classic one-at-a-time tool; > 1 exposes a batch/fan-out tool.
+	MaxInstances int `json:"max_instances,omitempty"`
 }
 
 // ProviderEntry describes one reusable provider profile in models.json.
@@ -185,6 +189,8 @@ type RuntimeAgentConfig struct {
 	PermissionsConfigPath string
 	// A2AAgents is the per-agent list of A2A agent names this agent can reach.
 	A2AAgents []string
+	// MaxInstances is the resolved parallel-invocation cap (always >= 1).
+	MaxInstances int
 }
 
 // RuntimeSquadConfig is one normalized squad: a named group composed of an
@@ -440,6 +446,10 @@ func resolveAgentEntries(entries []AgentEntry, modelCatalog map[string]RuntimeMo
 		if e.BuiltIn != nil {
 			builtIn = *e.BuiltIn
 		}
+		maxInstances := e.MaxInstances
+		if maxInstances < 1 {
+			maxInstances = 1
+		}
 		out = append(out, RuntimeAgentConfig{
 			Name:                              name,
 			ModelRef:                          modelRef,
@@ -466,6 +476,7 @@ func resolveAgentEntries(entries []AgentEntry, modelCatalog map[string]RuntimeMo
 			MCPServers:                        normalizeNames(e.MCPServers),
 			PermissionsConfigPath:             strings.TrimSpace(e.PermissionsConfigPath),
 			A2AAgents:                         normalizeNames(e.A2AAgents),
+			MaxInstances:                      maxInstances,
 		})
 	}
 	return out, nil
@@ -573,7 +584,15 @@ func normalizedAgentConfig(in RuntimeAgentConfig) RuntimeAgentConfig {
 		MCPServers:                        normalizeNames(in.MCPServers),
 		PermissionsConfigPath:             strings.TrimSpace(in.PermissionsConfigPath),
 		A2AAgents:                         normalizeNames(in.A2AAgents),
+		MaxInstances:                      maxInt(in.MaxInstances, 1),
 	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // resolveSquadEntries normalises raw JSON squad entries against the agent

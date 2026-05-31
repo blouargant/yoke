@@ -137,7 +137,14 @@ func buildSubAgentsFromConfigs(
 		if !ok {
 			return nil, nil, nil, nil, fmt.Errorf("agenttool for %q is not runnable", cfg.Name)
 		}
-		leaderSubTools = append(leaderSubTools, newNonConcurrentTool(wrapped))
+		// max_instances > 1 exposes a batch/fan-out tool that runs several
+		// independent invocations of this sub-agent in parallel; <= 1 keeps the
+		// single-task, one-at-a-time tool (today's behaviour).
+		if cfg.MaxInstances > 1 {
+			leaderSubTools = append(leaderSubTools, newParallelAgentTool(wrapped, cfg.MaxInstances))
+		} else {
+			leaderSubTools = append(leaderSubTools, newNonConcurrentTool(wrapped))
+		}
 	}
 	return subAgentMap, subAgents, leaderSubTools, mcpHandles, nil
 }

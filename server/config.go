@@ -688,7 +688,7 @@ func registerConfigRoutes(rg *gin.RouterGroup, files configFiles, restart *resta
 								recommendedModel = fm.Model
 							}
 						}
-						agents = append(agents, map[string]any{
+						agentMap := map[string]any{
 							"name":                    a.Name,
 							"description":             a.Description,
 							"enabled":                 a.Enabled,
@@ -707,7 +707,13 @@ func registerConfigRoutes(rg *gin.RouterGroup, files configFiles, restart *resta
 							"permissions_config_path": a.PermissionsConfigPath,
 							"a2a_agents":              a.A2AAgents,
 							"instruction":             agent.ReadAgentInstruction(a.Name),
-						})
+						}
+						// Only surface max_instances when it opts into parallelism, so
+						// default agents don't grow a noisy "max_instances": 1 on save.
+						if a.MaxInstances > 1 {
+							agentMap["max_instances"] = a.MaxInstances
+						}
+						agents = append(agents, agentMap)
 					}
 					// Sort agents: built-in first, then custom
 					sort.SliceStable(agents, func(i, j int) bool {
@@ -826,7 +832,7 @@ func registerConfigRoutes(rg *gin.RouterGroup, files configFiles, restart *resta
 								k == "builtin" || k == "model_ref" || k == "provider" || k == "model" || k == "base_url" ||
 								k == "api_key" || k == "tools" || k == "skills" || k == "softskills_dir" ||
 								k == "allow_file_attachments" || k == "mcp_config_path" || k == "mcp_servers" ||
-								k == "permissions_config_path" || k == "a2a_agents" {
+								k == "permissions_config_path" || k == "a2a_agents" || k == "max_instances" {
 								if k != "instruction" { // instruction is saved separately
 									cleanAgent[k] = v
 								}

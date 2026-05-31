@@ -16,10 +16,6 @@ type runnableTool interface {
 	Run(ctx tool.Context, args any) (map[string]any, error)
 }
 
-type requestProcessor interface {
-	ProcessRequest(ctx tool.Context, req *model.LLMRequest) error
-}
-
 type nonConcurrentTool struct {
 	inner runnableTool
 	mu    sync.Mutex
@@ -37,12 +33,15 @@ func (t *nonConcurrentTool) IsLongRunning() bool { return t.inner.IsLongRunning(
 
 func (t *nonConcurrentTool) Declaration() *genai.FunctionDeclaration { return t.inner.Declaration() }
 
-func (t *nonConcurrentTool) ProcessRequest(ctx tool.Context, req *model.LLMRequest) error {
-	processor, ok := t.inner.(requestProcessor)
-	if !ok {
-		return nil
-	}
-	return processor.ProcessRequest(ctx, req)
+// ProcessRequest packs THIS wrapper (not the inner agenttool) into the
+// request. ADK builds its function-call dispatch map from req.Tools, so
+// registering the inner here would make the runner call the inner's Run
+// directly and bypass the mutex below — which is exactly the gap this wrapper
+// is meant to close. Packing ourselves means duplicate concurrent calls to the
+// same sub-agent hit Run and get rejected. The declaration is identical to the
+// inner's (Declaration delegates), so the model sees no difference.
+func (t *nonConcurrentTool) ProcessRequest(_ tool.Context, req *model.LLMRequest) error {
+	return packToolDecl(req, t)
 }
 
 func (t *nonConcurrentTool) Run(ctx tool.Context, args any) (map[string]any, error) {

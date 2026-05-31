@@ -92,9 +92,32 @@ pool dedups any subprocess backing it).
 
 Sub-agents are wrapped via `agenttool.New()` and exposed as **tools** on
 the leader (not via `transfer_to_agent`), so control always returns to
-the leader after a sub-agent call. Only one sub-agent runs at a time
-(enforced by `newNonConcurrentTool`). The curator stays a single
-per-generation hook listening across every squad.
+the leader after a sub-agent call. By default each sub-agent runs one at a
+time ([agent/non_concurrent_tool.go](agent/non_concurrent_tool.go)
+`newNonConcurrentTool`, single-task schema): a mutex rejects a duplicate
+concurrent call of the same sub-agent with an "already running" error. The
+wrapper's `ProcessRequest` packs **itself** (via `packToolDecl`), not the
+inner agenttool — ADK dispatches function calls by the object stored in
+`req.Tools[name]`, so registering the inner there would call the inner's
+`Run` directly and bypass the mutex (the declaration is identical either way,
+so the model sees no difference). Setting an agent's
+`max_instances > 1` in its `agent.json` swaps that wrapper for
+[agent/parallel_agent_tool.go](agent/parallel_agent_tool.go)
+`newParallelAgentTool`: the leader then sees a **batch/fan-out** tool whose
+schema is `{ tasks: [ <inner-input>, … ] }` (the per-task shape mirrors the
+sub-agent's own input schema), capped at `max_instances`. `Run` fans the
+tasks out concurrently — each via the inner `agenttool.Run`, which builds
+its own runner+session per call, so concurrent invocations of one
+stateless sub-agent are safe — bounded by a semaphore of width
+`max_instances`, preserves order, isolates per-task errors into their slot,
+and returns `{ results: [ … ] }`. Because ADK dispatches function calls via
+`req.Tools[name]`, the parallel tool's `ProcessRequest` packs **itself**
+(not the inner) via the local `packToolDecl` (a copy of ADK's unexported
+`toolutils.PackTool`) so the model gets the batch declaration and the runner
+dispatches the fan-out. `max_instances` defaults to `1` and is per-agent
+(JSON only — no web-UI field yet, but it round-trips through the editor
+save). The curator stays a single per-generation hook listening across every
+squad.
 
 **Soft-skill reflection pipeline** — at `EventSessionEnd`, [agent/load_recorder.go](agent/load_recorder.go)
 drains its in-memory bucket (leader-loaded skills, tool errors), runs
