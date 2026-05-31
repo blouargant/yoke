@@ -32,9 +32,11 @@ func tryAutoInstallSkills(skillNames []string, skillsReadDir, skillsWriteDir, re
 
 		found := false
 		for _, reg := range regs {
-			if !reg.Serves(registries.KindSkills) {
-				continue
-			}
+			// Search every registry, not just skills-kind ones: a multi-purpose
+			// repo (e.g. one holding an agent alongside its skills) is commonly
+			// registered under a single kind, so a kind filter would skip the
+			// dependency. BrowseSkills finds nothing in a registry without
+			// SKILL.md files.
 			ref, err := registries.ParseRepoRef(reg.URL, reg.Provider)
 			if err != nil {
 				continue
@@ -104,9 +106,10 @@ func tryAutoInstallMCP(serverNames []string, mcpConfigRead, mcpConfigWrite, remo
 
 		found := false
 		for _, reg := range regs {
-			if !reg.Serves(registries.KindMCP) {
-				continue
-			}
+			// Search every registry, not just mcp-kind ones — see tryAutoInstallSkills.
+			// A repo bundling an agent with its MCP server is often registered under
+			// a single kind. BrowseMCPTools finds nothing in a registry without MCP
+			// manifests.
 			ref, err := registries.ParseRepoRef(reg.URL, reg.Provider)
 			if err != nil {
 				continue
@@ -165,9 +168,9 @@ func tryAutoInstallAgents(agentNames []string, agentsRegistryDir string, agentsC
 
 		found := false
 		for _, reg := range regs {
-			if !reg.Serves(registries.KindAgents) {
-				continue
-			}
+			// Search every registry, not just agents-kind ones — a referenced
+			// agent may live in a multi-kind repo registered under a single
+			// kind. BrowseAgents finds nothing in a registry without agent.json.
 			ref, err := registries.ParseRepoRef(reg.URL, reg.Provider)
 			if err != nil {
 				continue
@@ -257,9 +260,9 @@ func tryAutoInstallCommands(commandNames []string, remoteRegistriesPath string) 
 		}
 		found := false
 		for _, reg := range regs {
-			if !reg.Serves(registries.KindCommands) {
-				continue
-			}
+			// Search every registry, not just commands-kind ones — a skill and
+			// the command it depends on may share a repo registered under a
+			// single kind. BrowseCommands finds nothing without command files.
 			ref, err := registries.ParseRepoRef(reg.URL, reg.Provider)
 			if err != nil {
 				continue
@@ -318,9 +321,9 @@ func tryAutoInstallPermissions(permNames []string, permReadPath, permWritePath, 
 		}
 		found := false
 		for _, reg := range regs {
-			if !reg.Serves(registries.KindPermissions) {
-				continue
-			}
+			// Search every registry, not just permissions-kind ones — see
+			// tryAutoInstallCommands. BrowsePermissions finds nothing in a
+			// registry without permission rule-sets.
 			ref, err := registries.ParseRepoRef(reg.URL, reg.Provider)
 			if err != nil {
 				continue

@@ -41,9 +41,10 @@ func (d Deps) resolveSkillDeps(commands, perms []string) (installed, warnings []
 		}
 		found := false
 		for _, reg := range regs {
-			if !reg.Serves(KindCommands) {
-				continue
-			}
+			// Search every registry, not just commands-kind ones — a skill and
+			// the command it depends on may live in the same repo registered
+			// under a single kind. BrowseCommands finds nothing in a registry
+			// without command markdown files.
 			ref, err := ParseRepoRef(reg.URL, reg.Provider)
 			if err != nil {
 				continue
@@ -80,9 +81,9 @@ func (d Deps) resolveSkillDeps(commands, perms []string) (installed, warnings []
 		}
 		found := false
 		for _, reg := range regs {
-			if !reg.Serves(KindPermissions) {
-				continue
-			}
+			// Search every registry, not just permissions-kind ones — see the
+			// commands loop above. BrowsePermissions finds nothing in a registry
+			// without permission rule-sets.
 			ref, err := ParseRepoRef(reg.URL, reg.Provider)
 			if err != nil {
 				continue
@@ -184,9 +185,11 @@ func (d Deps) resolveAgentDeps(skills, mcpServers []string) (installed, warnings
 		}
 		found := false
 		for _, reg := range regs {
-			if !reg.Serves(KindSkills) {
-				continue
-			}
+			// Search every registry, not just skills-kind ones: a multi-purpose
+			// repo (e.g. one holding an agent alongside its skills) is commonly
+			// registered under a single kind, so a kind filter would skip the
+			// skill the agent depends on. BrowseSkills is a best-effort tree
+			// walk that simply finds nothing in a registry without SKILL.md.
 			ref, err := ParseRepoRef(reg.URL, reg.Provider)
 			if err != nil {
 				continue
@@ -230,9 +233,11 @@ func (d Deps) resolveAgentDeps(skills, mcpServers []string) (installed, warnings
 		}
 		found := false
 		for _, reg := range regs {
-			if !reg.Serves(KindMCP) {
-				continue
-			}
+			// Search every registry, not just mcp-kind ones — see the skills
+			// loop above. A repo bundling an agent with its MCP server is often
+			// registered under a single kind, so a kind filter would skip the
+			// server the agent depends on. BrowseMCPTools returns nothing in a
+			// registry without MCP manifests.
 			ref, err := ParseRepoRef(reg.URL, reg.Provider)
 			if err != nil {
 				continue

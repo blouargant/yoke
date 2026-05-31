@@ -1018,10 +1018,26 @@ MCP resolution is shared by every surface via `registries.ResolveMCPServer` +
 `registries.MergeMCPServer` ([internal/registries/mcp_install.go](internal/registries/mcp_install.go)),
 which handle both `mcp.md` (YAML frontmatter) and JSON manifests — so the helper
 agent's `InstallMCP` ([agent/agent.go](agent/agent.go) `buildRegistriesDeps`) and
-the web UI route stay in lock-step. Anything not found in any matching registry
+the web UI route stay in lock-step. Anything not found in any registry
 comes back as a `warnings[]` entry, surfaced by `showInstallResult`
 ([web/settings.js](web/settings.js)) for the web UI or in the tool result for the
 helper. Resolution is best-effort and never rolls back the agent install.
+
+**Dependency resolution searches every registry, not just kind-matched ones.**
+The cascade loops (`resolveAgentDeps`/`resolveSkillDeps` in
+[internal/registries/agent_deps.go](internal/registries/agent_deps.go), and the
+`tryAutoInstall*` helpers in [server/install_helpers.go](server/install_helpers.go))
+deliberately do **not** filter registries by `Serves(kind)` when hunting a declared
+dependency: a multi-purpose repo (an agent shipped alongside its skills + MCP
+server) is usually registered under a single `kind`, so a kind filter would skip
+the very skill/MCP the agent needs even though `search_registries` (which indexes
+every kind) lists it. Each `Browse*` call is a best-effort tree walk that returns
+nothing in a registry lacking that kind's files, so the broadened search is safe —
+it just costs a few extra browse calls per install. The helper agent's instruction
+([registry/agents/helper/instruction.md](registry/agents/helper/instruction.md))
+additionally requires it to install (not merely report) any dependency that still
+lands in `warnings`, by locating it via `search_registries`/`install_remote_item`,
+before telling the caller a dependency is genuinely unavailable.
 
 **Dependency cascade on skill install** — symmetrically, a **skill** declares
 its dependencies via two SKILL.md frontmatter lists, `commands:` and
