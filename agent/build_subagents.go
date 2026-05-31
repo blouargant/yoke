@@ -109,7 +109,7 @@ func buildSubAgentsFromConfigs(
 			instr = defaultAgentInstruction(cfg.Name)
 		}
 
-		subTools, subToolsets, extraInstr, subHandles := toolsForAgentConfig(ctx, cfg, runtime, skillTS, softSkillTS, leaderMCPHandles, pool, codeIdx, regIdx, docIdx)
+		subTools, subToolsets, extraInstr, subHandles := toolsForAgentConfig(ctx, cfg, runtime, skillTS, softSkillTS, leaderMCPHandles, pool, codeIdx, regIdx, docIdx, false, nil)
 		mcpHandles = append(mcpHandles, subHandles...)
 		instr = extraInstr + instr
 

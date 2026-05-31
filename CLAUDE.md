@@ -90,6 +90,35 @@ same generation can use different squads. Squads only *reference* agents
 squads that share a member also share that member's wiring (and the MCP
 pool dedups any subprocess backing it).
 
+**Leaderless squads** — a squad with `leader` set to `"none"` (or empty)
+and **exactly one member** runs that single agent **directly as the runner
+root**, with no coordinator: no sub-agent delegation tools, no coordinator
+instruction, and tools limited to exactly what the agent declares (plus the
+always-on essentials below). This is the right shape for a specialist that
+has nobody to coordinate (e.g. the `Helper` squad). ≥2 members require a real
+leader; the default squad always has one. ([agent/squad.go](agent/squad.go)
+keys on `RuntimeSquadConfig.Leader == ""`; `resolveSquadEntries` in
+[agent/runtime_config.go](agent/runtime_config.go) normalises `"none"`→`""`
+and enforces the one-member rule.)
+
+**Config-driven root tools** — both a coordinating leader and a leaderless
+root build their tools from the root agent's declared `tools` groups via
+`toolsForAgentConfig` (the same resolver sub-agents use), so a squad root is
+limited to exactly the capability groups it declares — it no longer inherits a
+fixed coordinator toolset. Infra-scoped coordination groups are declarable
+keys: `planning` (todo + task graph), `worktree`, `bg`. **Always-on for any
+squad root** (not gated): the teammate **mailbox** (so the root stays
+reachable cross-session — another squad can `teammate_ask` the Helper to
+install a skill) and **ask_user**. **Coordinating-leader-only** (skipped when
+leaderless): sub-agent delegation tools, `curate_session`,
+`record_session_feedback`. A coordinating leader additionally keeps
+embedder-backed soft-skill recall (`toolsForAgentConfig`'s `asLeader` path);
+sub-agents and leaderless roots use the glob-only per-agent soft-skill loader.
+Because the default `leader` and `skill_editor` previously got several tools
+unconditionally, their `agent.json` now declares them explicitly
+(`planning`/`worktree`/`bg`, plus `softskills`/`calc` for `skill_editor`) so
+behaviour is unchanged.
+
 Sub-agents are wrapped via `agenttool.New()` and exposed as **tools** on
 the leader (not via `transfer_to_agent`), so control always returns to
 the leader after a sub-agent call. By default each sub-agent runs one at a
@@ -743,6 +772,12 @@ Squads compose existing agents. Add a `SquadEntry` to the top-level
       "description": "Web research focus.",
       "leader": "leader",
       "members": ["web_agent", "summariser"]
+    },
+    {
+      "name": "helper",
+      "description": "Single specialist, no coordinator.",
+      "leader": "none",
+      "members": ["helper"]
     }
   ]
 }
@@ -755,11 +790,16 @@ Rules enforced at resolution time:
   non-default squad in the editor.
 - `leader` and every `members[i]` must reference an enabled agent;
   `curator` cannot be a member (it is process-wide).
+- A non-`"none"` `leader` must be an agent marked `leader: true`.
+- A `leader` of `"none"` (or empty) makes the squad **leaderless** and
+  requires **exactly one member** (it runs directly as the root — see
+  "Leaderless squads" above); the member need not be `leader: true`.
 - Duplicate squad names are rejected.
 
-The web UI exposes a Squads sub-tab under Settings → Agent with leader
-dropdown, member checkboxes, and add/delete. Hot-reload picks up squad
-edits without a process restart.
+The web UI exposes a Squads sub-tab under Settings → Agent with a leader
+dropdown (including a `(none — run single agent directly)` option that
+switches the member picker to single-select), member checkboxes, and
+add/delete. Hot-reload picks up squad edits without a process restart.
 
 ### Adding a skill
 

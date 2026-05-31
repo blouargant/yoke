@@ -116,6 +116,44 @@ func TestSquadsDefaultSynthesized(t *testing.T) {
 	}
 }
 
+// TestSquadsLeaderless verifies that a squad with leader "none" (or empty)
+// resolves to a leaderless squad: Leader normalised to "" and exactly one
+// member, which need not be marked leader:true.
+func TestSquadsLeaderless(t *testing.T) {
+	dir := t.TempDir()
+	setupAgentsRegistry(t, dir, []AgentEntry{
+		{Name: "leader"},
+		{Name: "helper"},
+	})
+
+	cfgPath := filepath.Join(dir, "agent.json")
+	mustWrite(t, cfgPath, []byte(`{
+  "agents": ["leader", "helper"],
+  "squads": [
+    {"name": "default", "leader": "leader", "members": ["helper"]},
+    {"name": "Helper", "leader": "none", "members": ["helper"]}
+  ]
+}`))
+
+	runtime, err := ResolveRuntimeSettings(Options{
+		ConfigPath:       cfgPath,
+		ConfigPathStrict: true,
+	})
+	if err != nil {
+		t.Fatalf("ResolveRuntimeSettings() error = %v", err)
+	}
+	sq, ok := runtime.Squad("helper")
+	if !ok {
+		t.Fatal("helper squad missing")
+	}
+	if sq.Leader != "" {
+		t.Fatalf("leaderless squad Leader = %q, want empty", sq.Leader)
+	}
+	if !equalStringSlice(sq.Members, []string{"helper"}) {
+		t.Fatalf("leaderless squad members = %v, want [helper]", sq.Members)
+	}
+}
+
 // TestSquadsValidation covers the rejection paths.
 func TestSquadsValidation(t *testing.T) {
 	cases := []struct {
@@ -174,6 +212,30 @@ func TestSquadsValidation(t *testing.T) {
   ]
 }`,
 			wantError: `not marked as leader: true`,
+		},
+		{
+			name:   "leaderless with no member",
+			agents: []AgentEntry{{Name: "leader"}, {Name: "helper"}},
+			config: `{
+  "agents": ["leader", "helper"],
+  "squads": [
+    {"name": "default", "leader": "leader", "members": ["helper"]},
+    {"name": "solo", "leader": "none", "members": []}
+  ]
+}`,
+			wantError: "exactly one member",
+		},
+		{
+			name:   "leaderless with multiple members",
+			agents: []AgentEntry{{Name: "leader"}, {Name: "helper"}, {Name: "web_agent"}},
+			config: `{
+  "agents": ["leader", "helper", "web_agent"],
+  "squads": [
+    {"name": "default", "leader": "leader", "members": ["helper", "web_agent"]},
+    {"name": "solo", "leader": "none", "members": ["helper", "web_agent"]}
+  ]
+}`,
+			wantError: "exactly one member",
 		},
 	}
 	for _, tc := range cases {
@@ -253,6 +315,44 @@ func TestSquadAccessors(t *testing.T) {
 	}
 	if sq, ok := runtime.DefaultSquad(); !ok || sq.Name != DefaultSquadName {
 		t.Fatalf("DefaultSquad() = %+v, ok=%v", sq, ok)
+	}
+}
+
+// TestSquadLeaderInstructionIsPerAgent guards the squad-leader wiring bug where
+// a non-default squad leader (e.g. the "helper" agent leading the "Helper"
+// squad) was given the generic coordinator instruction instead of its own.
+// buildSquadInstance resolves an empty inline Instruction via
+// defaultAgentInstruction(leaderCfg.Name) — NOT a hardcoded "leader" — so the
+// chosen prompt must depend on the leader agent's name. This asserts the
+// resolver the fix relies on is genuinely name-keyed and that the helper's and
+// leader's shipped instructions are materially different.
+func TestSquadLeaderInstructionIsPerAgent(t *testing.T) {
+	dir := t.TempDir()
+	// setupAgentsRegistry copies each agent's real instruction.md from the
+	// repo's registry/agents/<name>/ into the temp registry.
+	setupAgentsRegistry(t, dir, []AgentEntry{
+		{Name: "leader"},
+		{Name: "helper"},
+	})
+
+	leaderInstr := defaultAgentInstruction("leader")
+	helperInstr := defaultAgentInstruction("helper")
+
+	if leaderInstr == "" || helperInstr == "" {
+		t.Fatalf("instructions missing: leader=%d bytes helper=%d bytes",
+			len(leaderInstr), len(helperInstr))
+	}
+	if leaderInstr == helperInstr {
+		t.Fatal("helper and leader resolve to the same instruction; a squad led " +
+			"by the helper would get the coordinator prompt (the bug this guards)")
+	}
+	// Spot-check the two prompts are the ones we expect, so the test fails
+	// loudly if the helper is ever pointed at the coordinator instruction.
+	if !strings.Contains(leaderInstr, "coordinator") {
+		t.Errorf("leader instruction missing %q marker", "coordinator")
+	}
+	if !strings.Contains(helperInstr, "registry steward") {
+		t.Errorf("helper instruction missing %q marker", "registry steward")
 	}
 }
 

@@ -13,6 +13,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/model"
@@ -25,7 +26,6 @@ import (
 	"github.com/blouargant/yoke/core/events"
 	"github.com/blouargant/yoke/core/llm"
 	fstools "github.com/blouargant/yoke/core/tools"
-	"github.com/blouargant/yoke/internal/a2a"
 	mcpcfg "github.com/blouargant/yoke/internal/mcp"
 	"github.com/blouargant/yoke/internal/paths"
 	"github.com/blouargant/yoke/internal/softskills"
@@ -86,12 +86,24 @@ func buildSquadInstance(
 	runtime RuntimeSettings,
 	squad RuntimeSquadConfig,
 ) (*squadBuildResult, error) {
-	leaderCfg, ok := runtime.AgentConfig(squad.Leader)
-	if !ok {
-		return nil, fmt.Errorf("squad %q: leader %q not found in agent catalogue", squad.Name, squad.Leader)
+	// A leaderless squad (Leader == "") runs its single member directly as the
+	// runner root — no coordinator, no sub-agents — so the agent is limited to
+	// exactly the tools it declares (plus the always-on essentials below).
+	// resolveSquadEntries guarantees a leaderless squad has exactly one member.
+	leaderless := squad.Leader == ""
+	rootName := squad.Leader
+	if leaderless {
+		if len(squad.Members) != 1 {
+			return nil, fmt.Errorf("squad %q: leaderless squad must have exactly one member", squad.Name)
+		}
+		rootName = squad.Members[0]
 	}
-	if !leaderCfg.Enabled {
-		return nil, fmt.Errorf("squad %q: leader %q is disabled", squad.Name, squad.Leader)
+	rootCfg, ok := runtime.AgentConfig(rootName)
+	if !ok {
+		return nil, fmt.Errorf("squad %q: root agent %q not found in agent catalogue", squad.Name, rootName)
+	}
+	if !rootCfg.Enabled {
+		return nil, fmt.Errorf("squad %q: root agent %q is disabled", squad.Name, rootName)
 	}
 
 	modelForAgent := func(cfg RuntimeAgentConfig) (model.LLM, error) {
@@ -102,133 +114,144 @@ func buildSquadInstance(
 		return m, nil
 	}
 
-	orchestratorLLM, err := modelForAgent(leaderCfg)
+	orchestratorLLM, err := modelForAgent(rootCfg)
 	if err != nil {
 		return nil, err
 	}
 
-	// ── Leader tools (closing over infra's session-scoped state holders) ──
-	leadTools := []tool.Tool{}
-	leadTools = append(leadTools, fstools.New()...)
-	leadTools = append(leadTools, fstools.NewCalcTools()...)
-	leadTools = append(leadTools, infra.TodoStore.Tools()...)
-	leadTools = append(leadTools, infra.TaskGraph.Tools()...)
-	leadTools = append(leadTools, worktree.Tools(infra.Repo)...)
-	leadTools = append(leadTools, infra.BgQueues.Tool())
-	leadTools = append(leadTools, curateSessionTool())
-	// record_session_feedback persists the wrap-session answer to
-	// $YOKE_HOME/logs/agent_feedback_<suffix>.json so the post-session
-	// reflector can treat it as the dominant verdict signal.
-	leadTools = append(leadTools, softskills.NewFeedbackTool(
-		paths.LogsDir(),
-		func(u, s string) string { return infra.SessionSuffix(u, s) },
-	))
-
 	emb := infra.Embedder(ctx, runtime)
-	skillTS, softSkillTS, _, toolsets, leaderHandles := buildLeaderToolsets(ctx, runtime, leaderCfg, infra.MCPPool, emb)
+	// buildLeaderToolsets resolves the root's skill/soft-skill/MCP toolsets and
+	// acquires its MCP handles (also handed to sub-agents). Its aggregated
+	// toolset slice is intentionally discarded: the root's tools are assembled
+	// from its declared `tools` groups via toolsForAgentConfig, exactly like a
+	// sub-agent, so a specialised root only gets what it asks for.
+	skillTS, softSkillTS, _, _, leaderHandles := buildLeaderToolsets(ctx, runtime, rootCfg, infra.MCPPool, emb)
 	allMCPHandles := append([]*mcpcfg.Handle(nil), leaderHandles...)
 
 	nameFunc := func(u, s, name string) string { return infra.NameFunc(u, s, name) }
-
-	leadMailbox := teammates.NewAgent(leaderCfg.Name, infra.Backend)
-	leadMailbox.NameFunc = nameFunc
-	leadMailbox.Registry = infra.Registry
-	// When the host drains the inbox in the background (server pushManager),
-	// drop the leader's teammate_check tool: polling would be redundant and
-	// would race the background drainer for the single-consumer inbox.
-	leadMailbox.SuppressInboxPolling = opts.BackgroundMailboxDelivery
-	leadTools = append(leadTools, leadMailbox.Tools()...)
-
-	// Mount remote A2A peers the leader can reach. A2AAgents names entries
-	// from a2a_config.json; unknown names are silently skipped so a
-	// misconfigured leader still boots. Instruction text describing each
-	// peer is assembled into leaderInstruction below.
-	var a2aPeers []a2a.Agent
-	if len(leaderCfg.A2AAgents) > 0 && runtime.A2AConfigPath != "" {
-		if a2aCfg, err := a2a.Load(runtime.A2AConfigPath); err == nil {
-			a2aPeers = selectA2AAgents(a2aCfg, leaderCfg.A2AAgents)
-			if a2aTools := a2a.NewTools(a2aPeers); len(a2aTools) > 0 {
-				leadTools = append(leadTools, a2aTools...)
-			}
-		}
-	}
-
-	subAgentCallbacks := infra.Bus.AgentCallbacks(events.PluginOptions{IncludeModelRequest: opts.DebugLogging})
-
-	// Resolve the member agent configs (preserving the order declared in the
-	// squad). buildSubAgents below loops over this filtered list rather than
-	// the full agent catalogue, so other squads' members don't get wired in.
-	memberCfgs := make([]RuntimeAgentConfig, 0, len(squad.Members))
-	for _, m := range squad.Members {
-		cfg, ok := runtime.AgentConfig(m)
-		if !ok || !cfg.Enabled {
-			continue
-		}
-		if cfg.Name == leaderCfg.Name {
-			continue
-		}
-		memberCfgs = append(memberCfgs, cfg)
-	}
-
 	codeIdx := infra.CodeIndex(ctx, runtime)
 	regIdx := infra.RegistryIndex(ctx, runtime)
 	docIdx := infra.DocIndex(ctx, runtime)
-	subAgentMap, subAgents, subAgentLeaderTools, subAgentMCPHandles, err := buildSubAgentsFromConfigs(
-		ctx, memberCfgs, runtime,
-		skillTS, softSkillTS, leaderHandles, infra.MCPPool,
-		modelForAgent, subAgentCallbacks, codeIdx, regIdx, docIdx,
-	)
-	if err != nil {
-		for _, h := range allMCPHandles {
-			infra.MCPPool.Release(h)
-		}
-		return nil, fmt.Errorf("squad %q: %w", squad.Name, err)
+
+	// ── Root capability tools — config-driven from rootCfg.Tools ──
+	// A coordinating leader (asLeader=true) keeps embedder-backed soft-skill
+	// recall; a leaderless root uses sub-agent (glob) soft-skill semantics.
+	capTools, capToolsets, capInstruction, capHandles := toolsForAgentConfig(
+		ctx, rootCfg, runtime, skillTS, softSkillTS, leaderHandles,
+		infra.MCPPool, codeIdx, regIdx, docIdx, !leaderless, emb)
+	allMCPHandles = append(allMCPHandles, capHandles...)
+
+	leadTools := append([]tool.Tool{}, capTools...)
+
+	// Infra-scoped coordination groups, gated on declaration. These need
+	// session-scoped state holders, so they are mounted here rather than in
+	// toolsForAgentConfig.
+	keySet := make(map[string]bool, len(rootCfg.Tools))
+	for _, k := range rootCfg.Tools {
+		keySet[strings.TrimSpace(k)] = true
 	}
-	allMCPHandles = append(allMCPHandles, subAgentMCPHandles...)
-	leadTools = append(leadTools, subAgentLeaderTools...)
+	if keySet["planning"] {
+		leadTools = append(leadTools, infra.TodoStore.Tools()...)
+		leadTools = append(leadTools, infra.TaskGraph.Tools()...)
+	}
+	if keySet["worktree"] {
+		leadTools = append(leadTools, worktree.Tools(infra.Repo)...)
+	}
+	if keySet["bg"] {
+		leadTools = append(leadTools, infra.BgQueues.Tool())
+	}
+
+	// ── Always-on for any squad root: teammate mailbox + ask_user ──
+	// The mailbox keeps the root reachable by other sessions/squads (e.g. a
+	// coordinator asking the Helper to install a skill); ask_user lets it prompt
+	// the user. Inbound delivery is drained on the canonical session address
+	// (Infrastructure.WatchMailbox) regardless of the root agent's name.
+	leadMailbox := teammates.NewAgent(rootCfg.Name, infra.Backend)
+	leadMailbox.NameFunc = nameFunc
+	leadMailbox.Registry = infra.Registry
+	// When the host drains the inbox in the background (server pushManager),
+	// drop the teammate_check tool: polling would race the background drainer
+	// for the single-consumer inbox.
+	leadMailbox.SuppressInboxPolling = opts.BackgroundMailboxDelivery
+	leadTools = append(leadTools, leadMailbox.Tools()...)
+
+	// ── Sub-agents + coordinator-only session tools (skipped when leaderless) ──
+	subAgentMap := map[string]adkagent.Agent{}
+	var subAgents []adkagent.Agent
+	var memberCfgs []RuntimeAgentConfig
+	if !leaderless {
+		subAgentCallbacks := infra.Bus.AgentCallbacks(events.PluginOptions{IncludeModelRequest: opts.DebugLogging})
+
+		// Resolve the member agent configs (preserving declared order).
+		// buildSubAgents loops over this filtered list rather than the full
+		// catalogue, so other squads' members don't get wired in.
+		memberCfgs = make([]RuntimeAgentConfig, 0, len(squad.Members))
+		for _, m := range squad.Members {
+			cfg, ok := runtime.AgentConfig(m)
+			if !ok || !cfg.Enabled {
+				continue
+			}
+			if cfg.Name == rootCfg.Name {
+				continue
+			}
+			memberCfgs = append(memberCfgs, cfg)
+		}
+
+		var subAgentLeaderTools []tool.Tool
+		var subAgentMCPHandles []*mcpcfg.Handle
+		var berr error
+		subAgentMap, subAgents, subAgentLeaderTools, subAgentMCPHandles, berr = buildSubAgentsFromConfigs(
+			ctx, memberCfgs, runtime,
+			skillTS, softSkillTS, leaderHandles, infra.MCPPool,
+			modelForAgent, subAgentCallbacks, codeIdx, regIdx, docIdx,
+		)
+		if berr != nil {
+			for _, h := range allMCPHandles {
+				infra.MCPPool.Release(h)
+			}
+			return nil, fmt.Errorf("squad %q: %w", squad.Name, berr)
+		}
+		allMCPHandles = append(allMCPHandles, subAgentMCPHandles...)
+		leadTools = append(leadTools, subAgentLeaderTools...)
+
+		// Session-lifecycle tools belong to a coordinator that owns the session.
+		leadTools = append(leadTools, curateSessionTool())
+		// record_session_feedback persists the wrap-session answer to
+		// $YOKE_HOME/logs/agent_feedback_<suffix>.json so the post-session
+		// reflector can treat it as the dominant verdict signal.
+		leadTools = append(leadTools, softskills.NewFeedbackTool(
+			paths.LogsDir(),
+			func(u, s string) string { return infra.SessionSuffix(u, s) },
+		))
+	}
 
 	leadTools = append(leadTools, fstools.NewAskUserTool(infra.AskUserRegistry))
 
-	leaderDescription := leaderCfg.Description
-	if leaderDescription == "" {
-		leaderDescription = defaultAgentDescription("leader")
+	rootDescription := rootCfg.Description
+	if rootDescription == "" {
+		rootDescription = defaultAgentDescription(rootCfg.Name)
 	}
-	leaderInstruction := leaderCfg.Instruction
-	if leaderInstruction == "" {
-		leaderInstruction = defaultAgentInstruction("leader")
+	rootInstruction := rootCfg.Instruction
+	if rootInstruction == "" {
+		rootInstruction = defaultAgentInstruction(rootCfg.Name)
 	}
-	if skillTS != nil && softSkillTS != nil {
-		leaderInstruction = softskills.LoaderRule + leaderInstruction
-	}
-	// When the semantic embedder is configured the leader also gets the
-	// recall_softskills tool; tell it to rank with recall before the glob scan.
-	if emb != nil && softSkillTS != nil {
-		leaderInstruction = softskills.RecallProtocolAddendum + leaderInstruction
-	}
-	if mounted := filterMCPHandles(leaderHandles, leaderCfg.MCPServers); len(mounted) > 0 {
-		names := make([]string, 0, len(mounted))
-		for _, h := range mounted {
-			names = append(names, h.Name)
-		}
-		if p := mcpcfg.BuildLoaderProtocol(names); p != "" {
-			leaderInstruction = p + "\n" + leaderInstruction
-		}
-	}
-	// Only describe the squad's members in the leader prompt — not every
-	// agent in the catalogue — so two squads can specialise the same
-	// agent.json by exposing different subsets.
-	leaderInstruction += buildSubAgentCapabilitiesBlock(memberCfgs, runtime)
-	if len(a2aPeers) > 0 {
-		leaderInstruction += buildA2AInstruction(a2aPeers)
+	// capInstruction carries the loader protocols for the groups actually
+	// mounted (skills, soft-skills + recall, registries, MCP, A2A); prepend it
+	// so the tool docs precede the agent's own prompt.
+	rootInstruction = capInstruction + rootInstruction
+	if !leaderless {
+		// Only describe this squad's members so two squads can specialise the
+		// same agent.json by exposing different subsets.
+		rootInstruction += buildSubAgentCapabilitiesBlock(memberCfgs, runtime)
 	}
 
 	lead, err := agentkit.New(agentkit.AgentConfig{
-		Name:        leaderCfg.Name,
-		Description: leaderDescription,
+		Name:        rootCfg.Name,
+		Description: rootDescription,
 		Model:       orchestratorLLM,
 		Tools:       leadTools,
-		Toolsets:    toolsets,
-		Instruction: leaderInstruction,
+		Toolsets:    capToolsets,
+		Instruction: rootInstruction,
 	})
 	if err != nil {
 		for _, h := range allMCPHandles {
@@ -287,8 +310,8 @@ func buildSquadInstance(
 		Plugins:                    plugins,
 		RunnerConfig:               rc,
 		Runner:                     r,
-		LeaderCfg:                  leaderCfg,
-		LeaderAllowFileAttachments: leaderCfg.AllowFileAttachments,
+		LeaderCfg:                  rootCfg,
+		LeaderAllowFileAttachments: rootCfg.AllowFileAttachments,
 	}
 	subAgentNames := make([]string, 0, len(memberCfgs))
 	for _, cfg := range memberCfgs {

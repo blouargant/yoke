@@ -1515,6 +1515,9 @@ const BASE_PATH = window.BASE_PATH || "";
       .filter(a => a && a.name && (a.enabled === undefined || a.enabled) && (a.name || "").toLowerCase() !== "curator");
     const members = Array.isArray(sq.members) ? sq.members : [];
     const isDefault = (sq.name || "").toLowerCase() === "default";
+    // A leaderless squad (leader "" or "none") runs a single member agent
+    // directly, with no coordinator. The default squad always needs a leader.
+    const leaderless = !isDefault && (!sq.leader || (sq.leader || "").toLowerCase() === "none");
 
     // Sort: selected members first (in the order they appear in `members`),
     // then the rest. The leader of the squad is forced last and rendered
@@ -1546,8 +1549,10 @@ const BASE_PATH = window.BASE_PATH || "";
         <div class="agent-detail-field">
           <label class="agent-detail-label">Leader</label>
           <select class="agent-detail-input" id="squad-leader">
-            ${leaderCandidates.map(n => `<option value="${escHtml(n)}" ${n === sq.leader ? "selected" : ""}>${escHtml(n)}</option>`).join("")}
+            ${isDefault ? "" : `<option value="none" ${leaderless ? "selected" : ""}>(none — run single agent directly)</option>`}
+            ${leaderCandidates.map(n => `<option value="${escHtml(n)}" ${!leaderless && n === sq.leader ? "selected" : ""}>${escHtml(n)}</option>`).join("")}
           </select>
+          ${leaderless ? '<div class="agent-detail-hint">Leaderless: the single selected agent runs directly with only its own declared tools (plus ask_user and the teammate mailbox). No coordinator.</div>' : ""}
         </div>
         <div class="agent-detail-field">
           <label class="agent-detail-label">Members</label>
@@ -1568,7 +1573,7 @@ const BASE_PATH = window.BASE_PATH || "";
             `;
             }).join("")}
           </div>
-          <div class="agent-detail-hint">Sub-agents the leader can delegate to (the leader itself is not selectable).</div>
+          <div class="agent-detail-hint">${leaderless ? "Pick exactly one agent — it runs as the squad on its own." : "Sub-agents the leader can delegate to (the leader itself is not selectable)."}</div>
         </div>
         ${!isDefault ? `<div class="squad-detail-actions"><button type="button" class="agent-detail-remove" id="squad-remove">Delete squad</button></div>` : ""}
       </div>
@@ -1593,9 +1598,14 @@ const BASE_PATH = window.BASE_PATH || "";
     });
     panel.querySelector("#squad-leader").addEventListener("change", (e) => {
       sq.leader = e.target.value;
-      // Drop the new leader from the members list (a squad cannot list its
-      // own leader as a member). Re-render so the disabled state updates.
-      if (Array.isArray(sq.members)) {
+      if ((sq.leader || "").toLowerCase() === "none") {
+        // Leaderless: keep at most one member so the single agent runs directly.
+        if (Array.isArray(sq.members) && sq.members.length > 1) {
+          sq.members = [sq.members[0]];
+        }
+      } else if (Array.isArray(sq.members)) {
+        // Drop the new leader from the members list (a squad cannot list its
+        // own leader as a member).
         sq.members = sq.members.filter(m => m !== sq.leader);
       }
       onChange();
@@ -1606,7 +1616,11 @@ const BASE_PATH = window.BASE_PATH || "";
       card.addEventListener("click", () => {
         const name = card.dataset.name;
         if (!Array.isArray(sq.members)) sq.members = [];
-        if (sq.members.includes(name)) {
+        if (leaderless) {
+          // Single-agent selection: clicking an agent makes it the sole member;
+          // clicking the selected one clears it.
+          sq.members = sq.members.includes(name) ? [] : [name];
+        } else if (sq.members.includes(name)) {
           sq.members = sq.members.filter(m => m !== name);
         } else {
           sq.members.push(name);

@@ -623,18 +623,22 @@ func resolveSquadEntries(entries []SquadEntry, agents []RuntimeAgentConfig) ([]R
 		}
 		seenName[name] = true
 		leader := strings.ToLower(strings.TrimSpace(e.Leader))
-		if leader == "" {
-			return nil, fmt.Errorf("runtime config: squad %q has empty leader", name)
-		}
-		leaderCfg, ok := enabled[leader]
-		if !ok {
-			return nil, fmt.Errorf("runtime config: squad %q leader %q is not an enabled agent", name, leader)
-		}
-		if !leaderCfg.Leader {
-			return nil, fmt.Errorf("runtime config: squad %q leader %q is not marked as leader: true", name, leader)
+		// A leaderless squad (leader "" or "none") runs a single member agent
+		// directly as the runner root — no coordinator. It must declare exactly
+		// one member, which need not be marked leader:true.
+		leaderless := leader == "" || leader == "none"
+		seenMember := map[string]bool{}
+		if !leaderless {
+			leaderCfg, ok := enabled[leader]
+			if !ok {
+				return nil, fmt.Errorf("runtime config: squad %q leader %q is not an enabled agent", name, leader)
+			}
+			if !leaderCfg.Leader {
+				return nil, fmt.Errorf("runtime config: squad %q leader %q is not marked as leader: true", name, leader)
+			}
+			seenMember[leader] = true
 		}
 		members := make([]string, 0, len(e.Members))
-		seenMember := map[string]bool{leader: true}
 		for _, raw := range e.Members {
 			m := strings.ToLower(strings.TrimSpace(raw))
 			if m == "" || seenMember[m] {
@@ -648,6 +652,14 @@ func resolveSquadEntries(entries []SquadEntry, agents []RuntimeAgentConfig) ([]R
 				return nil, fmt.Errorf("runtime config: squad %q cannot include the curator agent (curator is process-wide)", name)
 			}
 			members = append(members, m)
+		}
+		if leaderless {
+			// Normalise the leaderless marker to "" internally; buildSquadInstance
+			// keys on an empty Leader.
+			leader = ""
+			if len(members) != 1 {
+				return nil, fmt.Errorf("runtime config: leaderless squad %q must have exactly one member (got %d); set a leader to coordinate multiple agents", name, len(members))
+			}
 		}
 		out = append(out, RuntimeSquadConfig{
 			Name:        name,

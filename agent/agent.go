@@ -22,6 +22,7 @@ import (
 	"google.golang.org/adk/tool"
 	"gopkg.in/yaml.v3"
 
+	"github.com/blouargant/yoke/core/embed"
 	"github.com/blouargant/yoke/core/events"
 	"github.com/blouargant/yoke/core/llm"
 	fstools "github.com/blouargant/yoke/core/tools"
@@ -176,7 +177,17 @@ func defaultToolKeys(name string) []string {
 	}
 }
 
-func toolsForAgentConfig(ctx context.Context, cfg RuntimeAgentConfig, runtime RuntimeSettings, skillTS, softSkillTS tool.Toolset, leaderMCPHandles []*mcpcfg.Handle, pool *mcpcfg.Pool, codeIdx *codeindex.Index, regIdx *regindex.Index, docIdx *docindex.Index) ([]tool.Tool, []tool.Toolset, string, []*mcpcfg.Handle) {
+// toolsForAgentConfig resolves an agent's tools from its declared `tools`
+// groups. It is shared by sub-agents and by squad roots (both coordinating
+// leaders and leaderless single-agent squads), so a root agent is limited to
+// exactly the capability groups it declares.
+//
+// asLeader marks the coordinating-leader case: the leader keeps the
+// embedder-backed, top-level soft-skill toolset passed in (so recall_softskills
+// stays mounted) instead of rebuilding a per-agent glob loader, and — when emb
+// is non-nil — advertises recall in its instruction. Sub-agents and leaderless
+// roots pass asLeader=false (per-agent glob soft-skills, no recall).
+func toolsForAgentConfig(ctx context.Context, cfg RuntimeAgentConfig, runtime RuntimeSettings, skillTS, softSkillTS tool.Toolset, leaderMCPHandles []*mcpcfg.Handle, pool *mcpcfg.Pool, codeIdx *codeindex.Index, regIdx *regindex.Index, docIdx *docindex.Index, asLeader bool, emb embed.Embedder) ([]tool.Tool, []tool.Toolset, string, []*mcpcfg.Handle) {
 	keys := cfg.Tools
 	if keys == nil {
 		keys = defaultToolKeys(cfg.Name)
@@ -190,15 +201,19 @@ func toolsForAgentConfig(ctx context.Context, cfg RuntimeAgentConfig, runtime Ru
 		resolvedSkillTS = ts
 	}
 	resolvedSoftSkillTS := softSkillTS
-	agentSoftSkillsDir := cfg.SoftSkillsDir
-	if agentSoftSkillsDir == "" && cfg.Name != "" {
-		agentSoftSkillsDir = filepath.Join(runtime.SoftSkillsDir, cfg.Name)
-	}
-	if agentSoftSkillsDir != "" && agentSoftSkillsDir != runtime.SoftSkillsDir {
-		// Sub-agents use the glob-only soft-skill loader (recall is mounted on
-		// the leader in Phase 1); pass a nil embedder.
-		if sts, err := softskills.Toolset(ctx, agentSoftSkillsDir, nil); err == nil {
-			resolvedSoftSkillTS = sts
+	if !asLeader {
+		// Sub-agents and leaderless roots use the glob-only, per-agent soft-skill
+		// loader (recall is a coordinating-leader feature); pass a nil embedder.
+		// The coordinating leader keeps the embedder-backed top-level toolset
+		// passed in as softSkillTS.
+		agentSoftSkillsDir := cfg.SoftSkillsDir
+		if agentSoftSkillsDir == "" && cfg.Name != "" {
+			agentSoftSkillsDir = filepath.Join(runtime.SoftSkillsDir, cfg.Name)
+		}
+		if agentSoftSkillsDir != "" && agentSoftSkillsDir != runtime.SoftSkillsDir {
+			if sts, err := softskills.Toolset(ctx, agentSoftSkillsDir, nil); err == nil {
+				resolvedSoftSkillTS = sts
+			}
 		}
 	}
 	// Resolve the candidate MCP handle pool for this agent: by default the
@@ -315,6 +330,11 @@ func toolsForAgentConfig(ctx context.Context, cfg RuntimeAgentConfig, runtime Ru
 	}
 	if hasSoftSkills {
 		instructionParts = append(instructionParts, softskills.LoaderProtocol)
+		if asLeader && emb != nil {
+			// The coordinating leader's soft-skill toolset is embedder-backed, so
+			// advertise recall_softskills alongside the glob loader.
+			instructionParts = append(instructionParts, softskills.RecallProtocolAddendum)
+		}
 	}
 	if hasSkills && hasSoftSkills {
 		instructionParts = append(instructionParts, softskills.LoaderRule)

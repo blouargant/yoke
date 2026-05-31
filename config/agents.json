@@ -37,9 +37,11 @@
     },
     {
       "name": "Helper",
-      "description": "Focused on answering questions about yoke from its documentation and crawling remote registries to find, inspect, and install items on demand. The Helper is the sole member and leader of this squad.",
-      "leader": "helper",
-      "members": []
+      "description": "Focused on answering questions about yoke from its documentation and crawling remote registries to find, inspect, and install items on demand. Leaderless: the Helper agent runs directly, limited to its own docs + registries tools.",
+      "leader": "none",
+      "members": [
+        "helper"
+      ]
     }
   ],
   "token_optimization": true

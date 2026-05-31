@@ -20,6 +20,11 @@
     "Glob",
     "Skill",
     "revert",
-    "mime"
+    "mime",
+    "softskills",
+    "calc",
+    "planning",
+    "worktree",
+    "bg"
   ]
 }
