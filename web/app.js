@@ -117,6 +117,12 @@ const els = {
   archivedHeader:document.getElementById("archived-header"),
   archivedList:  document.getElementById("archived-list"),
   archivedCount: document.getElementById("archived-count"),
+  foldersPanel:  document.getElementById("folders-panel"),
+  foldersResize: document.getElementById("folders-resize"),
+  foldersHeader: document.getElementById("folders-header"),
+  foldersBody:   document.getElementById("folders-body"),
+  foldersPath:   document.getElementById("folders-path"),
+  foldersList:   document.getElementById("folders-list"),
   chat:          document.getElementById("chat"),
   paneTpl:       document.getElementById("chat-pane-tpl"),
   ctxBrowserOverlay:  document.getElementById("ctx-browser-overlay"),
@@ -271,6 +277,7 @@ function setFocusedPanel(pid) {
   activeSessionId = p ? p.sessionId : null;
   if (AgentDebug.enabled) { AgentDebug.activeSession = activeSessionId; AgentDebug._paint(); }
   refreshSidebarActive();
+  refreshFoldersPanel();
   saveLayout();
 }
 
@@ -4121,7 +4128,11 @@ async function runBangCommand(command, panel) {
     });
     const data = await res.json();
     if (!res.ok) setBashBlockOutput(block, data.error || `error ${res.status}`, "");
-    else setBashBlockOutput(block, data.output || "", data.dir || "");
+    else {
+      setBashBlockOutput(block, data.output || "", data.dir || "");
+      // A "!cd" may have moved the cwd; keep the Folders panel in sync.
+      if (data.dir && data.dir !== foldersDir && sessionId === activeSessionId) refreshFoldersPanel();
+    }
   } catch (e) {
     setBashBlockOutput(block, "error: " + e, "");
   }
@@ -4972,6 +4983,7 @@ document.addEventListener("mousemove", (e) => {
   if (sidebarDragging) {
     const w = Math.min(SIDEBAR_MAX_W, Math.max(SIDEBAR_MIN_W, e.clientX));
     setSidebarWidth(w);
+    layoutWidths(); // chat width changed live; refill panes (transition is off while dragging)
   }
   if (paneDividerDrag) {
     const d = paneDividerDrag;
@@ -5011,6 +5023,16 @@ els.sidebarToggle.addEventListener("click", () => {
   else collapseSidebar();
 });
 
+// Collapsing/expanding the sidebar animates its width (0.15s), which changes
+// the chat area's available width. The panes are sized in fixed pixels, so
+// they must be re-normalized to refill the chat area once the animation ends —
+// otherwise the tabbar/panes keep their old widths until a reload. (A sidebar
+// drag disables the transition and so won't fire this; the drag path handles
+// its own width via the resize loop.)
+els.sidebar.addEventListener("transitionend", (e) => {
+  if (e.target === els.sidebar && e.propertyName === "width") layoutWidths();
+});
+
 // ─── Archived sessions panel collapse ─────────────────────────────────────────
 
 const ARCHIVED_COL_KEY = "agent_archived_collapsed";
@@ -5029,6 +5051,139 @@ els.archivedHeader.addEventListener("click", toggleArchivedPanel);
 els.archivedHeader.addEventListener("keydown", (e) => {
   if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleArchivedPanel(); }
 });
+
+// ─── Folders browser panel ────────────────────────────────────────────────────
+// Browses the active session's working directory — the same process-wide cwd the
+// "!cd" shell-escape mutates — so navigating here is equivalent to typing "!cd".
+const FOLDERS_COL_KEY = "agent_folders_collapsed";
+let foldersDir = "";          // last-rendered directory
+function foldersCollapsed() { return els.foldersPanel.classList.contains("collapsed"); }
+function applyFoldersCollapse(collapsed) {
+  els.foldersPanel.classList.toggle("collapsed", collapsed);
+  els.foldersHeader.setAttribute("aria-expanded", String(!collapsed));
+}
+// Default collapsed; persists the user's choice across reloads.
+applyFoldersCollapse(localStorage.getItem(FOLDERS_COL_KEY) !== "0");
+function toggleFoldersPanel() {
+  const collapsed = !foldersCollapsed();
+  applyFoldersCollapse(collapsed);
+  localStorage.setItem(FOLDERS_COL_KEY, collapsed ? "1" : "0");
+  if (!collapsed) loadFolder();
+}
+els.foldersHeader.addEventListener("click", toggleFoldersPanel);
+els.foldersHeader.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleFoldersPanel(); }
+});
+
+// Drag the top border of the folders panel to resize the listing's height.
+// The list's max-height is overridden inline (px); the choice persists across
+// reloads. Dragging up grows the list, down shrinks it.
+const FOLDERS_H_KEY = "agent_folders_height";
+const FOLDERS_H_MIN = 60;
+function applyFoldersHeight(px) {
+  const max = Math.max(FOLDERS_H_MIN, window.innerHeight - 60);
+  const h = Math.round(Math.min(max, Math.max(FOLDERS_H_MIN, px)));
+  els.foldersList.style.maxHeight = h + "px";
+  return h;
+}
+(function () {
+  const saved = parseInt(localStorage.getItem(FOLDERS_H_KEY) || "", 10);
+  if (Number.isFinite(saved)) applyFoldersHeight(saved);
+})();
+els.foldersResize.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  const startY = e.clientY;
+  const startH = els.foldersList.clientHeight;
+  els.foldersResize.setPointerCapture(e.pointerId);
+  document.body.style.userSelect = "none";
+  const onMove = (ev) => {
+    const h = applyFoldersHeight(startH + (startY - ev.clientY));
+    localStorage.setItem(FOLDERS_H_KEY, String(h));
+  };
+  const onUp = (ev) => {
+    els.foldersResize.releasePointerCapture(ev.pointerId);
+    document.body.style.userSelect = "";
+    els.foldersResize.removeEventListener("pointermove", onMove);
+    els.foldersResize.removeEventListener("pointerup", onUp);
+  };
+  els.foldersResize.addEventListener("pointermove", onMove);
+  els.foldersResize.addEventListener("pointerup", onUp);
+});
+
+// refreshFoldersPanel reloads the listing when the panel is open. Called when the
+// active session changes or after a "!cd" mutates the cwd.
+function refreshFoldersPanel() { if (!foldersCollapsed()) loadFolder(); }
+
+// loadFolder fetches and renders the active session's working directory listing.
+async function loadFolder(path) {
+  const sessionId = activeSessionId;
+  if (!sessionId) { renderFolder(null); return; }
+  try {
+    const opts = path != null
+      ? { method: "POST", body: JSON.stringify({ path }) }
+      : { method: "GET" };
+    const res = await apiFetch(`/api/sessions/${sessionId}/folder`, opts);
+    const data = await res.json();
+    if (!res.ok) { renderFolder(null, data.error); return; }
+    renderFolder(data);
+  } catch {
+    renderFolder(null, "failed to read folder");
+  }
+}
+
+// renderFolder paints the path header and the entry list ("..", dirs, files).
+// Clicking a directory (or "..") navigates into it via loadFolder(path); files
+// open in a new tab through the read-only /api/file route.
+function renderFolder(data, err) {
+  els.foldersList.innerHTML = "";
+  if (!data) {
+    els.foldersPath.textContent = "";
+    els.foldersPath.removeAttribute("data-tip");
+    const li = document.createElement("li");
+    li.id = "folders-empty";
+    li.textContent = err || (activeSessionId ? "empty" : "no active session");
+    els.foldersList.appendChild(li);
+    return;
+  }
+  foldersDir = data.dir || "";
+  // RTL on the element keeps the deepest path visible; wrap in LRM so the
+  // leading slash isn't reordered.
+  els.foldersPath.textContent = "‎" + foldersDir;
+  els.foldersPath.setAttribute("data-tip", foldersDir);
+
+  const folderSvg = `<svg class="folder-entry-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
+  const fileSvg = `<svg class="folder-entry-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+  const upSvg = `<svg class="folder-entry-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"/></svg>`;
+
+  // Parent ".." unless we're at the filesystem root.
+  if (foldersDir && foldersDir !== "/") {
+    const up = document.createElement("li");
+    up.className = "folder-up";
+    up.innerHTML = `${upSvg}<span class="folder-entry-name">..</span>`;
+    up.addEventListener("click", () => loadFolder(".."));
+    els.foldersList.appendChild(up);
+  }
+
+  for (const e of (data.entries || [])) {
+    const li = document.createElement("li");
+    li.className = e.dir ? "folder-dir" : "folder-file";
+    li.innerHTML = `${e.dir ? folderSvg : fileSvg}<span class="folder-entry-name"></span>`;
+    li.querySelector(".folder-entry-name").textContent = e.name;
+    li.setAttribute("data-tip", e.name);
+    if (e.dir) {
+      li.addEventListener("click", () => loadFolder(e.name));
+    } else {
+      li.addEventListener("click", () => openFileRef(e.name, activeSessionId));
+    }
+    els.foldersList.appendChild(li);
+  }
+  if (!els.foldersList.children.length) {
+    const li = document.createElement("li");
+    li.id = "folders-empty";
+    li.textContent = "empty";
+    els.foldersList.appendChild(li);
+  }
+}
 
 // ─── Context ring popup ───────────────────────────────────────────────────────
 // The ring + popup live per-pane (wired in attachPaneHandlers). A document-level

@@ -3,6 +3,8 @@ package main
 import (
 	"net/http"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -82,6 +84,76 @@ func handleBash(d serverDeps) gin.HandlerFunc {
 		bashCwd.set(id, newCwd)
 		d.Registry.Touch(id)
 		c.JSON(http.StatusOK, gin.H{"output": out, "dir": newCwd})
+	}
+}
+
+// handleFolder lists the session's current working directory (GET) or changes
+// it (POST with {path}). The working directory is the same process-wide bashCwd
+// store the interactive "!cd" shell-escape mutates, so navigating in the web-UI
+// Folders panel and typing "!cd" stay in sync. A relative path is resolved
+// against the current directory and an absolute path is used as-is; ".." walks
+// up. Like the "!" shell-escape and the Read tool it is read-only filesystem
+// access and trusts the authenticated user with host file access.
+func handleFolder(d serverDeps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := c.Param("id")
+		if _, ok := d.Registry.Get(id); !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+		dir := bashCwd.get(id)
+		if c.Request.Method == http.MethodPost {
+			var req struct {
+				Path string `json:"path"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
+				return
+			}
+			target := strings.TrimSpace(req.Path)
+			if target != "" {
+				if !filepath.IsAbs(target) {
+					target = filepath.Join(dir, target)
+				}
+				target = filepath.Clean(target)
+				info, err := os.Stat(target)
+				if err != nil || !info.IsDir() {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "not a directory"})
+					return
+				}
+				dir = target
+				bashCwd.set(id, dir)
+				d.Registry.Touch(id)
+			}
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		type folderEntry struct {
+			Name string `json:"name"`
+			Dir  bool   `json:"dir"`
+		}
+		out := make([]folderEntry, 0, len(entries))
+		for _, e := range entries {
+			isDir := e.IsDir()
+			// Resolve symlinks so a link to a directory is navigable.
+			if !isDir && e.Type()&os.ModeSymlink != 0 {
+				if info, err := os.Stat(filepath.Join(dir, e.Name())); err == nil && info.IsDir() {
+					isDir = true
+				}
+			}
+			out = append(out, folderEntry{Name: e.Name(), Dir: isDir})
+		}
+		// Directories first, then files, each alphabetical (case-insensitive).
+		sort.Slice(out, func(i, j int) bool {
+			if out[i].Dir != out[j].Dir {
+				return out[i].Dir
+			}
+			return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+		})
+		c.JSON(http.StatusOK, gin.H{"dir": dir, "entries": out})
 	}
 }
 

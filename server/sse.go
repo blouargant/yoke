@@ -16,6 +16,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/blouargant/yoke/core/events"
+	fstools "github.com/blouargant/yoke/core/tools"
 	"github.com/blouargant/yoke/internal/fileref"
 	"github.com/blouargant/yoke/internal/sessions"
 )
@@ -68,6 +69,12 @@ func handleMessages(d serverDeps) gin.HandlerFunc {
 		defer d.AgentEvents.unsubscribe(subCh)
 
 		ctx := c.Request.Context()
+
+		// Run the agent's file-system tools in this session's working directory
+		// (the cwd the "!cd" shell-escape and the Folders panel mutate). Carried
+		// on the context so it also reaches sub-agents, which run in a freshly
+		// created session and so can't be reached by the SessionID resolver.
+		ctx = fstools.WithCwd(ctx, bashCwd.get(meta.ID))
 
 		// Serialise with any background mailbox-push turn for this session.
 		if d.RunGuard != nil {

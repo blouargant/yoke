@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"github.com/blouargant/yoke/agent"
+	fstools "github.com/blouargant/yoke/core/tools"
 	"github.com/blouargant/yoke/internal/paths"
 	"github.com/blouargant/yoke/internal/sessions"
 )
@@ -153,6 +154,14 @@ func run() error {
 		log.Printf("server: hot-reload triggered by registry install (generation=%d)", manager.CurrentGeneration())
 	})
 	defer agent.SetReloadHook(nil)
+
+	// Make the agent's file-system tools (Bash, Read, Write, Edit, Grep, Glob)
+	// operate in each session's working directory — the same per-session cwd the
+	// "!cd" shell-escape and the web-UI Folders panel mutate (bashCwd). Sessions
+	// that never navigated resolve to the process working directory, so default
+	// behaviour is unchanged.
+	fstools.SetCwdResolver(func(sessionID string) string { return bashCwd.get(sessionID) })
+	defer fstools.SetCwdResolver(nil)
 
 	registry := sessions.NewRegistry()
 

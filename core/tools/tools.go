@@ -15,7 +15,8 @@ func New() []tool.Tool {
 		mustTool("Bash",
 			"Run a shell command via /bin/sh -c. Use for arbitrary shell operations. Times out after 120s by default. "+
 				"Arguments: `command` (string, required) — the full shell command line to run. Do NOT use any other field name (e.g. `cmd`, `script`, `file_path`); calls with extra or missing properties are rejected.",
-			func(_ tool.Context, in BashIn) (BashOut, error) {
+			func(ctx tool.Context, in BashIn) (BashOut, error) {
+				in.Cwd = sessionCwd(ctx)
 				out, _ := RunBash(context.Background(), in)
 				return BashOut{Output: out}, nil
 			}),
@@ -23,14 +24,16 @@ func New() []tool.Tool {
 			"Read a file and return numbered lines. Use when you need to inspect file content or reference specific line numbers in a subsequent write. "+
 				"Arguments: `file_path` (string, required), "+
 				"`start_line` (int, optional, 1-based), `end_line` (int, optional). Returns up to 50,000 characters.",
-			func(_ tool.Context, in ReadIn) (ReadOut, error) {
+			func(ctx tool.Context, in ReadIn) (ReadOut, error) {
+				in.Path = resolveAgainst(sessionCwd(ctx), in.Path)
 				out, _ := RunRead(context.Background(), in)
 				return ReadOut{Content: out}, nil
 			}),
 		mustTool("Write",
 			"Write content to a file. Automatically snapshots the previous contents so you can revert. Creates parent directories if needed. "+
 				"Arguments: `file_path` (string, required), `content` (string, required).",
-			func(_ tool.Context, in WriteIn) (WriteOut, error) {
+			func(ctx tool.Context, in WriteIn) (WriteOut, error) {
+				in.Path = resolveAgainst(sessionCwd(ctx), in.Path)
 				out, _ := RunWrite(context.Background(), in)
 				return WriteOut{Result: out}, nil
 			}),
@@ -41,7 +44,8 @@ func New() []tool.Tool {
 				"add more surrounding context to make `old_string` unique, or set `replace_all:true`. "+
 				"Arguments: `file_path` (string, required), `old_string` (string, required), `new_string` (string, required), "+
 				"`replace_all` (bool, optional, default false).",
-			func(_ tool.Context, in EditIn) (EditOut, error) {
+			func(ctx tool.Context, in EditIn) (EditOut, error) {
+				in.Path = resolveAgainst(sessionCwd(ctx), in.Path)
 				out, _ := RunEdit(context.Background(), in)
 				return EditOut{Result: out}, nil
 			}),
@@ -49,20 +53,23 @@ func New() []tool.Tool {
 			"Search a regex pattern across files or a single file. Returns file:line matches. Prefer this over 'Bash grep'. "+
 				"Arguments: `pattern` (string, required) — extended regex; `path` (string, optional) — file or directory to search, defaults to '.' (current directory); `recursive` (bool, optional) — recurse into subdirectories, default false. "+
 				"Do NOT pass `file_path`, `start_line`, or `end_line` — those belong to the 'Read' tool.",
-			func(_ tool.Context, in GrepIn) (GrepOut, error) {
+			func(ctx tool.Context, in GrepIn) (GrepOut, error) {
+				in.Cwd = sessionCwd(ctx)
 				out, _ := RunGrep(context.Background(), in)
 				return GrepOut{Matches: out}, nil
 			}),
 		mustTool("Glob",
 			"Find files matching a glob pattern, e.g. '**/*.go'. Returns sorted matches.",
-			func(_ tool.Context, in GlobIn) (GlobOut, error) {
+			func(ctx tool.Context, in GlobIn) (GlobOut, error) {
+				in.Cwd = sessionCwd(ctx)
 				out, _ := RunGlob(context.Background(), in)
 				return GlobOut{Files: out}, nil
 			}),
 		mustTool("revert",
 			"Restore a file to its state before the last write call. Use when a write produced incorrect results. "+
 				"Arguments: `file_path` (string, required).",
-			func(_ tool.Context, in RevertIn) (RevertOut, error) {
+			func(ctx tool.Context, in RevertIn) (RevertOut, error) {
+				in.Path = resolveAgainst(sessionCwd(ctx), in.Path)
 				out, _ := RunRevert(context.Background(), in)
 				return RevertOut{Result: out}, nil
 			}),
@@ -70,7 +77,8 @@ func New() []tool.Tool {
 			"Inspect a file's content (magic bytes) to detect its true MIME type and canonical extension, "+
 				"then compare against the filename extension. Returns a formatted identity card. "+
 				"Arguments: `file_path` (string, required).",
-			func(_ tool.Context, in MimeIn) (MimeOut, error) {
+			func(ctx tool.Context, in MimeIn) (MimeOut, error) {
+				in.Path = resolveAgainst(sessionCwd(ctx), in.Path)
 				out, _ := RunMime(context.Background(), in)
 				return MimeOut{Card: out}, nil
 			}),

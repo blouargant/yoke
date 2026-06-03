@@ -275,9 +275,10 @@ type PluginConfig struct {
 	// to OutcomeAllowOnce (no persistence).
 	UserConfigPath string
 	// CWDFunc returns the current working directory for cwd-scoped
-	// rule matching and project-scoped persistence. Defaults to
-	// os.Getwd.
-	CWDFunc func() string
+	// rule matching and project-scoped persistence, given the tool call's
+	// context (so it can resolve the per-session working directory the user
+	// navigated to, not just the process cwd). Defaults to os.Getwd.
+	CWDFunc func(tc tool.Context) string
 	// OnPersist is called after a new rule is appended to
 	// UserConfigPath, so the caller can reload the rule set. Optional.
 	OnPersist func()
@@ -332,7 +333,7 @@ func NewPluginFromConfig(cfg PluginConfig) (*plugin.Plugin, SessionCleaner, erro
 		cfg.Asker = StdinAsker{}
 	}
 	if cfg.CWDFunc == nil {
-		cfg.CWDFunc = func() string {
+		cfg.CWDFunc = func(tool.Context) string {
 			d, _ := os.Getwd()
 			return d
 		}
@@ -346,7 +347,7 @@ func NewPluginFromConfig(cfg PluginConfig) (*plugin.Plugin, SessionCleaner, erro
 
 	cb := func(tc tool.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
 		input := flattenArgs(args)
-		cwd := cfg.CWDFunc()
+		cwd := cfg.CWDFunc(tc)
 		probeKey := t.Name() + "\x00" + input
 		sid := tc.SessionID()
 

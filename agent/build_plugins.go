@@ -8,9 +8,11 @@ import (
 
 	"google.golang.org/adk/model"
 	"google.golang.org/adk/plugin"
+	"google.golang.org/adk/tool"
 
 	"github.com/blouargant/yoke/core/events"
 	"github.com/blouargant/yoke/core/permissions"
+	fstools "github.com/blouargant/yoke/core/tools"
 	"github.com/blouargant/yoke/internal/cache"
 	"github.com/blouargant/yoke/internal/compress"
 	"github.com/blouargant/yoke/internal/paths"
@@ -178,7 +180,19 @@ func buildPermissionsPlugin(ctx context.Context, runtime RuntimeSettings, asker 
 		Asker:          asker,
 		UserConfigPath: userConfigPath,
 		OnPersist:      func() { _ = reloader.Refresh() },
-		Debug:          os.Getenv("YOKE_DEBUG") != "",
+		// Scope cwd-bound rules ("Allow in this project") to the session's
+		// working directory — the folder the user navigated to via the Folders
+		// panel / "!cd" — so a grant applies to that directory and its children
+		// but not its parents. Resolved identically to where the tools actually
+		// run; falls back to the process cwd when no per-session cwd resolves.
+		CWDFunc: func(tc tool.Context) string {
+			if d := fstools.CwdForContext(tc); d != "" {
+				return d
+			}
+			d, _ := os.Getwd()
+			return d
+		},
+		Debug: os.Getenv("YOKE_DEBUG") != "",
 	})
 	if err == nil && cleaner != nil && bus != nil {
 		sub := bus.Subscribe(events.EventSessionEnd, func(_ string, payload map[string]any) {

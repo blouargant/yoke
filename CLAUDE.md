@@ -658,6 +658,75 @@ LLM history (a convenience, like the todo widget).
   `bash-block` renderer live in [web/app.js](web/app.js), styled in
   [web/css/styles.css](web/css/styles.css).
 
+### Web UI Folders panel
+
+A collapsible **Folders** panel in the sidebar (`#folders-panel`, directly above
+`#archived-panel`, same look/feel — chevron + folder icon + section label,
+collapsed by default, collapse state in `localStorage["agent_folders_collapsed"]`)
+browses the **active session's working directory**. It reads and mutates the
+**same process-wide `bashCwd` store** the `!cd` shell-escape uses, so navigating
+folders here is equivalent to typing `!cd` (and vice-versa — a `!cd` refreshes the
+open panel, see `runBangCommand`).
+
+**This cwd is also the agent's tool working directory** (see "Per-session tool
+working directory" below): navigating the panel changes where the agent's
+`Bash`/`Read`/`Write`/`Edit`/`Grep`/`Glob` operate, not just the `!` shell-escape.
+
+- **Server** ([server/bash.go](server/bash.go) `handleFolder`, registered in
+  [server/server.go](server/server.go)): `GET /api/sessions/:id/folder` →
+  `{dir, entries:[{name,dir}]}` lists the session's current cwd (dirs first,
+  then files, case-insensitive alphabetical; symlinked dirs resolved via
+  `os.Stat`); `POST /api/sessions/:id/folder` `{path}` resolves `path` against
+  the cwd (relative joined, absolute as-is, `..` walks up), validates it is a
+  directory, calls `bashCwd.set`, and returns the new listing. Read-only host
+  file access, same trust model as the `!` shell-escape and `GET /api/file`.
+- **Client** ([web/app.js](web/app.js), styled in [web/css/styles.css](web/css/styles.css)):
+  `loadFolder(path)` GETs (no `path`) or POSTs (with `path`) and `renderFolder`
+  paints the path header plus a `..` entry (hidden at filesystem root), then
+  directory rows (click → `loadFolder(name)`) and file rows (click →
+  `openFileRef` opens via `GET /api/file` in a new tab). `refreshFoldersPanel`
+  reloads when the panel is open; called from `setFocusedPanel` (active-session
+  change) and after a `!cd` mutates the cwd.
+
+### Per-session tool working directory
+
+The agent's file-system tools (`Bash`, `Read`, `Write`, `Edit`, `Grep`, `Glob`,
+`revert`, `mime`) run in the **session's working directory** — the same
+per-session `bashCwd` the `!cd` shell-escape and the Folders panel mutate — not
+the process working directory. The mechanism lives in
+[core/tools/cwd.go](core/tools/cwd.go):
+
+- A per-session resolver (`SetCwdResolver`, read via `sessionCwd`) maps a tool
+  call's `ctx.SessionID()` to a directory; the server installs one backed by
+  `bashCwd.get` in [server/main.go](server/main.go). Plus a context-carried cwd
+  (`WithCwd` / `cwdFromContext`) that **takes precedence** and, unlike the
+  resolver, **propagates into sub-agent runners** — agenttool creates a fresh
+  session per sub-agent call (new id, parent `UserID`), so `ctx.SessionID()`
+  there is *not* the web-UI session; the context value reaches it because
+  `tool.Context` embeds `context.Context`. `handleMessages` plants it with
+  `fstools.WithCwd(ctx, bashCwd.get(meta.ID))` before `Runner.Run`
+  ([server/sse.go](server/sse.go)), so both the leader's direct file ops and any
+  it delegates to the investigator share the chosen directory.
+- The tool handlers in [core/tools/tools.go](core/tools/tools.go) apply it:
+  `Bash`/`Grep` set `cmd.Dir` (via the schema-hidden `Cwd string `json:"-"``
+  field on `BashIn`/`GrepIn`), `Glob` matches against it and reports matches
+  **relative** to it, and the file tools resolve a relative `file_path` against
+  it with `resolveAgainst`. Absolute paths are always honoured unchanged.
+- **Default-preserving**: with no resolver/value (CLI/TUI one-shot) or a session
+  that never navigated, `bashCwd.get` returns the process cwd, so resolution is a
+  no-op and behaviour is byte-identical to before. The `Cwd` fields carry
+  `json:"-"` so they never appear in the LLM-facing tool schema.
+- **Permission scoping follows the session cwd.** The permissions plugin's
+  `CWDFunc` now takes the tool context and resolves the cwd via the exported
+  `fstools.CwdForContext(tc)` (same resolution as the tools), falling back to the
+  process cwd ([agent/build_plugins.go](agent/build_plugins.go)). So an "Allow in
+  this project" grant is scoped to the folder the session is *in* when granted,
+  and `cwdMatches` (in [core/permissions/permissions.go](core/permissions/permissions.go))
+  makes it apply to that directory **and its descendants but never its parents** —
+  navigate deeper and the grant holds; navigate up out of the granted tree and it
+  no longer applies. (Sub-agents run their tools in a separate runner without the
+  permissions plugin, so this scoping is a leader-side concern.)
+
 ### `@file` references in the composer
 
 A composer prompt may reference files with `@path` — an `@` at the **start of

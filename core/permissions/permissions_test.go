@@ -94,8 +94,12 @@ func TestCheckHonorsCWDScope(t *testing.T) {
 	}{
 		{"/home/u/proj-a", DecisionAllow},
 		{"/home/u/proj-a/sub/dir", DecisionAllow}, // sub-directory matches
+		{"/home/u/proj-a/", DecisionAllow},        // trailing slash tolerated
 		{"/home/u/proj-b", DecisionAsk},
-		{"", DecisionAsk}, // no cwd → cwd-scoped rule doesn't fire
+		{"/home/u", DecisionAsk},              // parent escapes the scope → no match
+		{"/home", DecisionAsk},                // grandparent escapes too
+		{"/home/u/proj-a-other", DecisionAsk}, // string-prefix but not a child
+		{"", DecisionAsk},                     // no cwd → cwd-scoped rule doesn't fire
 	}
 	for _, c := range cases {
 		got, _ := rules.Check("Bash", `{"command":"do-thing"}`, c.cwd)

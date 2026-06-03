@@ -520,6 +520,8 @@ func newEngine(d serverDeps) *gin.Engine {
 
 	auth.POST("/sessions/:id/messages", handleMessages(d))
 	auth.POST("/sessions/:id/bash", handleBash(d))
+	auth.GET("/sessions/:id/folder", handleFolder(d))
+	auth.POST("/sessions/:id/folder", handleFolder(d))
 	auth.GET("/complete", handleComplete(d))
 	auth.GET("/complete-file", handleCompleteFile(d))
 	auth.POST("/fileref/resolve", handleFileRefResolve(d))

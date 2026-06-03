@@ -7,7 +7,7 @@
  * entire UI without touching any selector. */
 :root {
   /* Layout */
-  --sidebar-w: 220px;
+  --sidebar-w: 280px;
   --col-w: 860px;
 
   /* Surfaces */
@@ -162,6 +162,7 @@ body.resizing #sidebar { transition: none; }
 #sidebar.collapsed #squad-menu,
 #sidebar.collapsed .sidebar-section-label,
 #sidebar.collapsed #archived-panel,
+#sidebar.collapsed #folders-panel,
 #sidebar.collapsed #settings-menu,
 #sidebar.collapsed .session-name-row,
 #sidebar.collapsed .session-bottom-row,
@@ -426,6 +427,12 @@ body.resizing #sidebar { transition: none; }
   padding: 6px;
   overflow-y: auto;
   flex: 1;
+  /* Without this, the default min-height:auto refuses to shrink the list
+     below its content height: past ~5 rows it grows instead of scrolling,
+     the sidebar's overflow:hidden clips it, and the under-constrained layout
+     leaves added/removed rows unpainted until a reflow (e.g. selecting a
+     session) forces one. min-height:0 makes it a real scroll viewport. */
+  min-height: 0;
 }
 #session-list li {
   padding: 6px 10px;
@@ -528,6 +535,103 @@ body.resizing #sidebar { transition: none; }
   box-sizing: border-box;
 }
 
+/* ─── Folders browser panel ────────────────────────────────── */
+#folders-panel {
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex-shrink: 0;
+}
+/* Grab strip over the top border to resize the panel height (ns-resize).
+   Sits flush with the border via the negative margin so the visible line
+   itself is grabbable. Hidden when collapsed (nothing to resize). */
+#folders-resize {
+  height: 6px;
+  margin-top: -4px;
+  margin-bottom: -2px;
+  flex-shrink: 0;
+  cursor: ns-resize;
+}
+#folders-resize:hover { background: var(--accent, var(--border)); opacity: 0.4; }
+#folders-panel.collapsed #folders-resize { display: none; }
+#folders-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+#folders-header:hover { background: var(--bg-raised); }
+#folders-header .sidebar-section-label { margin: 0; }
+.folders-chevron {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  transition: transform 0.12s ease;
+  position: relative;
+  top: 2.5px;
+}
+#folders-panel:not(.collapsed) .folders-chevron { transform: rotate(90deg); }
+.folders-icon {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  margin-right: -12px;
+  position: relative;
+  top: 2.5px;
+}
+#folders-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+#folders-panel.collapsed #folders-body { display: none; }
+#folders-path {
+  font-size: 11px;
+  color: var(--text-faint);
+  padding: 2px 12px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;        /* keep the tail (deepest dir) visible when truncated */
+  text-align: left;
+}
+#folders-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 6px;
+  overflow-y: auto;
+  max-height: 32vh;
+}
+#folders-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-bottom: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: background 0.1s, color 0.1s;
+}
+#folders-list li:hover { background: var(--bg-raised); color: var(--text); }
+#folders-list li .folder-entry-icon { flex-shrink: 0; color: var(--text-faint); }
+#folders-list li:hover .folder-entry-icon { color: var(--text); }
+#folders-list li .folder-entry-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#folders-list li.folder-up { color: var(--text-faint); }
+#folders-list li.folder-file { cursor: default; }
+#folders-empty {
+  padding: 4px 12px 8px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
 /* ─── Archived sessions panel ──────────────────────────────── */
 #archived-panel {
   border-top: 1px solid var(--border);
@@ -540,7 +644,7 @@ body.resizing #sidebar { transition: none; }
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 6px 12px;
+  padding: 3px 12px;
   cursor: pointer;
   user-select: none;
 }
@@ -550,8 +654,17 @@ body.resizing #sidebar { transition: none; }
   flex-shrink: 0;
   color: var(--text-faint);
   transition: transform 0.12s ease;
+  position: relative;
+  top: 2.5px;
 }
 #archived-panel:not(.collapsed) .archived-chevron { transform: rotate(90deg); }
+.archived-icon {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  margin-right: -12px;
+  position: relative;
+  top: 2.5px;
+}
 .archived-count { color: var(--text-faint); font-size: 12px; margin-left: auto; }
 #archived-list {
   list-style: none;

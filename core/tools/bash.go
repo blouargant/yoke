@@ -156,6 +156,10 @@ func shellQuote(s string) string {
 type BashIn struct {
 	Command string `json:"command" jsonschema:"required,the exact shell command line to execute (this field is required and is the only accepted argument besides the optional 'timeout')"`
 	Timeout int    `json:"timeout,omitempty" jsonschema:"timeout in seconds, default 120"`
+	// Cwd is the directory to run the command in. It is set internally by the
+	// tool handler from the session's working directory and is excluded from the
+	// LLM-facing schema (json:"-"); empty means the process working directory.
+	Cwd string `json:"-"`
 }
 type BashOut struct {
 	Output string `json:"output"`
@@ -183,6 +187,9 @@ func RunBash(ctx context.Context, in BashIn) (string, error) {
 	// orphaned children can't keep the stdout/stderr pipes open and hang
 	// CombinedOutput past the timeout. See bash_unix.go / bash_windows.go.
 	cmd := newShellCommand(cctx, execCommand)
+	if in.Cwd != "" {
+		cmd.Dir = in.Cwd
+	}
 	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
 	s := strings.TrimRight(string(out), "\n")
