@@ -557,6 +557,18 @@ function attachPaneHandlers(panel) {
     uploadPickedFiles(panel, files);
   });
 
+  // Pasting a reference copied from the Folders panel (Ctrl/Cmd+C) inserts it
+  // space-padded so it stays a valid "@path" file ref. Only triggers when the
+  // clipboard exactly matches the ref we last copied — all other pastes are
+  // native.
+  pe.prompt.addEventListener("paste", (e) => {
+    if (!lastCopiedRef) return;
+    const text = (e.clipboardData?.getData("text") || "").trim();
+    if (text !== lastCopiedRef) return;
+    e.preventDefault();
+    insertRefIntoComposer(panel, lastCopiedRef);
+  });
+
   // Drag & drop onto the composer.
   let dragCounter = 0;
   pe.composerWrap.addEventListener("dragenter", (e) => {
@@ -5157,9 +5169,66 @@ async function loadFolder(path) {
 
 // Entry icons for the Folders tree (module scope so the recursive entry builder
 // can reuse them).
-const FOLDER_SVG = `<svg class="folder-entry-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
-const FOLDER_FILE_SVG = `<svg class="folder-entry-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
-const FOLDER_UP_SVG = `<svg class="folder-entry-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"/></svg>`;
+const FOLDER_SVG = `<svg class="folder-entry-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
+const FOLDER_FILE_SVG = `<svg class="folder-entry-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+const FOLDER_UP_SVG = `<svg class="folder-entry-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"/></svg>`;
+
+// File-type glyphs for the Folders tree (VS Code / Seti style): a recognised
+// extension renders as a coloured document glyph with a short label, both in the
+// language brand colour on a transparent background; unknown types fall back to
+// the neutral (currentColor) document icon. Keyed by lower-cased extension;
+// FILE_NAMES keys on whole names.
+const FILE_TYPES = {
+  go: { label: "GO", color: "#00add8" }, mod: { label: "GO", color: "#00add8" }, sum: { label: "GO", color: "#00add8" },
+  js: { label: "JS", color: "#e8d44d" }, mjs: { label: "JS", color: "#e8d44d" }, cjs: { label: "JS", color: "#e8d44d" },
+  jsx: { label: "JSX", color: "#61dafb" }, ts: { label: "TS", color: "#3178c6" }, tsx: { label: "TSX", color: "#61dafb" },
+  html: { label: "<>", color: "#e34c26" }, htm: { label: "<>", color: "#e34c26" },
+  css: { label: "CSS", color: "#519aba" }, scss: { label: "SCSS", color: "#c6538c" }, sass: { label: "SASS", color: "#c6538c" },
+  json: { label: "{}", color: "#cbcb41" }, jsonc: { label: "{}", color: "#cbcb41" },
+  md: { label: "MD", color: "#519aba" }, markdown: { label: "MD", color: "#519aba" },
+  py: { label: "PY", color: "#3572a5" }, rs: { label: "RS", color: "#dea584" }, rb: { label: "RB", color: "#cc342d" },
+  java: { label: "JV", color: "#cc8e34" }, c: { label: "C", color: "#7f95a3" }, h: { label: "H", color: "#7f95a3" },
+  cpp: { label: "C++", color: "#f34b7d" }, cc: { label: "C++", color: "#f34b7d" }, hpp: { label: "H++", color: "#f34b7d" },
+  cs: { label: "C#", color: "#37a533" }, php: { label: "PHP", color: "#6a74b3" }, swift: { label: "SW", color: "#f05138" },
+  kt: { label: "KT", color: "#a97bff" }, sh: { label: "SH", color: "#89e051" }, bash: { label: "SH", color: "#89e051" }, zsh: { label: "SH", color: "#89e051" },
+  yml: { label: "YML", color: "#cb6b6b" }, yaml: { label: "YML", color: "#cb6b6b" }, toml: { label: "TOM", color: "#bb7755" },
+  ini: { label: "INI", color: "#8a9aa3" }, cfg: { label: "CFG", color: "#8a9aa3" }, conf: { label: "CFG", color: "#8a9aa3" }, env: { label: "ENV", color: "#67b06a" },
+  sql: { label: "SQL", color: "#e0922f" }, xml: { label: "XML", color: "#e3a04c" }, svg: { label: "SVG", color: "#b073d6" },
+  png: { label: "IMG", color: "#b073d6" }, jpg: { label: "IMG", color: "#b073d6" }, jpeg: { label: "IMG", color: "#b073d6" }, gif: { label: "IMG", color: "#b073d6" }, webp: { label: "IMG", color: "#b073d6" }, ico: { label: "IMG", color: "#b073d6" },
+  pdf: { label: "PDF", color: "#d4564b" }, txt: { label: "TXT", color: "#8a9aa3" }, log: { label: "LOG", color: "#8a9aa3" }, lock: { label: "LCK", color: "#8a9aa3" },
+  zip: { label: "ZIP", color: "#8a9aa3" }, gz: { label: "GZ", color: "#8a9aa3" }, tar: { label: "TAR", color: "#8a9aa3" },
+};
+const FILE_NAMES = {
+  "go.mod": { label: "GO", color: "#00add8" }, "go.sum": { label: "GO", color: "#00add8" },
+  "makefile": { label: "MK", color: "#8a9aa3" }, "license": { label: "LIC", color: "#8a9aa3" },
+  ".gitignore": { label: "GIT", color: "#f14e32" }, ".env": { label: "ENV", color: "#67b06a" },
+};
+
+// fileTypeInfo resolves a file name to its glyph descriptor, or null (→ generic
+// document icon) when the type isn't recognised.
+function fileTypeInfo(name) {
+  const lower = name.toLowerCase();
+  if (FILE_NAMES[lower]) return FILE_NAMES[lower];
+  if (lower === "dockerfile" || lower.startsWith("dockerfile.")) return { label: "DCK", color: "#3a8fc4" };
+  const dot = lower.lastIndexOf(".");
+  if (dot <= 0) return null; // no extension, or a dotfile we don't special-case
+  return FILE_TYPES[lower.slice(dot + 1)] || null;
+}
+
+// fileIconSvg returns the coloured document glyph for a recognised file type
+// (transparent background, language-coloured outline + label), else the generic
+// neutral document icon.
+function fileIconSvg(name) {
+  const info = fileTypeInfo(name);
+  if (!info) return FOLDER_FILE_SVG;
+  const c = info.color;
+  const fs = info.label.length >= 3 ? 7 : 9;
+  return `<svg class="folder-entry-icon file-glyph" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">`
+    + `<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>`
+    + `<polyline points="14 2 14 8 20 8"/>`
+    + `<text x="11.5" y="18.5" text-anchor="middle" stroke="none" fill="${c}" font-family="ui-monospace,Menlo,Consolas,monospace" font-weight="700" font-size="${fs}">${escHtml(info.label)}</text>`
+    + `</svg>`;
+}
 
 // wireClickDblClick distinguishes a single click from a double click on el.
 // A single click is delayed briefly; a double click cancels the pending single
@@ -5176,13 +5245,18 @@ function wireClickDblClick(el, single, double) {
   });
 }
 
-// insertFileRef inserts an "@path/to/file" reference into the focused pane's
-// composer at the caret, padding with spaces so it stays a valid file ref.
-function insertFileRef(rel) {
-  const panel = focusedPanel();
+// lastCopiedRef holds the "@path" reference most recently copied from the
+// Folders panel (Ctrl/Cmd+C). The composer's paste handler uses it to recognise
+// our own ref on the clipboard and insert it space-padded; everything else
+// pastes natively.
+let lastCopiedRef = "";
+
+// insertRefIntoComposer inserts a ready "@path" reference (ref already includes
+// the leading "@") into a pane's composer at the caret, padding with spaces so
+// it stays a valid file ref.
+function insertRefIntoComposer(panel, ref) {
   if (!panel || !panel.els || !panel.els.prompt) return;
   const el = panel.els.prompt;
-  const ref = "@" + rel;
   const start = el.selectionStart ?? el.value.length;
   const end = el.selectionEnd ?? el.value.length;
   const before = el.value.slice(0, start);
@@ -5197,6 +5271,75 @@ function insertFileRef(rel) {
   el.dispatchEvent(new Event("input")); // refresh ref highlight + auto-grow
 }
 
+// insertFileRef inserts an "@rel" reference into the focused pane's composer.
+function insertFileRef(rel) {
+  insertRefIntoComposer(focusedPanel(), "@" + rel);
+}
+
+// copyFileRef copies an "@rel" reference to the system clipboard (with a legacy
+// execCommand fallback for non-secure contexts) and remembers it in
+// lastCopiedRef. The copied row keeps a persistent "copied" marker (cleared
+// from any previously-copied row) so the user can see which item is armed for
+// pasting; markCopiedRow re-applies it across tree re-renders.
+async function copyFileRef(rel, rowEl) {
+  const ref = "@" + rel;
+  lastCopiedRef = ref;
+  let ok = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(ref);
+      ok = true;
+    }
+  } catch { ok = false; }
+  if (!ok) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = ref;
+      ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    } catch { /* clipboard unavailable; lastCopiedRef still drives paste */ }
+  }
+  // Clear the marker from any previously-copied row, then mark this one. A brief
+  // "flash" class layers a one-shot pulse on top of the persistent highlight.
+  for (const r of els.foldersList.querySelectorAll(".folder-entry-row.copied")) {
+    r.classList.remove("copied");
+  }
+  if (rowEl) {
+    rowEl.classList.add("copied", "flash");
+    setTimeout(() => rowEl.classList.remove("flash"), 600);
+  }
+}
+
+// markCopiedRow re-applies the persistent "copied" highlight to an entry row
+// when it matches the currently-armed lastCopiedRef (entries are rebuilt on
+// every render / lazy expand, which would otherwise drop the class).
+function markCopiedRow(row, rel) {
+  if (lastCopiedRef && "@" + rel === lastCopiedRef) row.classList.add("copied");
+}
+
+// clearCopiedRef disarms the current Folders-panel selection: forgets
+// lastCopiedRef and strips the persistent highlight from every row.
+function clearCopiedRef() {
+  lastCopiedRef = "";
+  for (const r of els.foldersList.querySelectorAll(".folder-entry-row.copied")) {
+    r.classList.remove("copied");
+  }
+}
+
+// Escape clears the armed selection while the pointer is over the Folders panel.
+let foldersHover = false;
+els.foldersPanel.addEventListener("mouseenter", () => { foldersHover = true; });
+els.foldersPanel.addEventListener("mouseleave", () => { foldersHover = false; });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && foldersHover && lastCopiedRef) {
+    e.preventDefault();
+    clearCopiedRef();
+  }
+});
+
 // buildFolderEntry builds one <li> for the Folders tree. Directories carry a
 // collapsible nested <ul> (lazy-loaded on first expand) and respond to a single
 // click with expand/collapse, a double click with "navigate into" (mutates the
@@ -5207,12 +5350,22 @@ function buildFolderEntry(e, rel) {
   li.className = e.dir ? "folder-dir" : "folder-file";
   const row = document.createElement("div");
   row.className = "folder-entry-row";
+  row.tabIndex = -1; // focusable on click (so Ctrl/Cmd+C targets it), not in tab order
   const chevron = e.dir
     ? `<span class="folder-chevron">▸</span>`
     : `<span class="folder-chevron-spacer"></span>`;
-  row.innerHTML = `${chevron}${e.dir ? FOLDER_SVG : FOLDER_FILE_SVG}<span class="folder-entry-name"></span>`;
+  row.innerHTML = `${chevron}${e.dir ? FOLDER_SVG : fileIconSvg(e.name)}<span class="folder-entry-name"></span>`;
   row.querySelector(".folder-entry-name").textContent = e.name;
   row.setAttribute("data-tip", e.name);
+  markCopiedRow(row, rel); // restore the persistent "copied" highlight if armed
+  // Ctrl/Cmd+C copies the entry's "@rel" reference (file or directory) to the
+  // clipboard, so a Ctrl/Cmd+V in the chat editor inserts the reference.
+  row.addEventListener("keydown", (ev) => {
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "c" || ev.key === "C")) {
+      ev.preventDefault();
+      copyFileRef(rel, row);
+    }
+  });
   li.appendChild(row);
 
   if (e.dir) {

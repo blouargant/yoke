@@ -641,6 +641,24 @@ body.resizing #sidebar { transition: none; }
   text-align: center;
   color: var(--text-faint);
 }
+#folders-list .folder-entry-row:focus { outline: none; }
+#folders-list .folder-entry-row:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent-border-soft);
+}
+/* Persistent marker on the entry whose "@ref" is currently armed for pasting. */
+#folders-list .folder-entry-row.copied,
+#folders-list .folder-entry-row.copied:hover {
+  background: var(--accent-bg-soft);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent-strong);
+}
+#folders-list .folder-entry-row.copied .folder-entry-icon { color: var(--accent-strong); }
+/* One-shot pulse layered on top at the moment of copy. */
+#folders-list .folder-entry-row.flash { animation: folder-copy-flash 0.6s ease-out; }
+@keyframes folder-copy-flash {
+  0%   { background: var(--accent-strong); color: #fff; }
+  100% { background: var(--accent-bg-soft); }
+}
 #folders-list li.folder-up { color: var(--text-faint); }
 #folders-list li.folder-file > .folder-entry-row { cursor: default; }
 #folders-list li.folder-loading {

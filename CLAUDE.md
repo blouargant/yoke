@@ -687,16 +687,38 @@ working directory" below): navigating the panel changes where the agent's
   paints the path header plus a `..` entry (hidden at filesystem root), then a
   **lazy expand/collapse tree** built by `buildFolderEntry(entry, rel)` (each
   entry's clickable `.folder-entry-row` div plus, for dirs, a nested
-  `ul.folder-children`). Click discrimination is via `wireClickDblClick(el,
+  `ul.folder-children`). Files render a **VS Code / Seti-style type icon** via `fileIconSvg(name)`:
+  a recognised extension (`fileTypeInfo` → `FILE_TYPES`/`FILE_NAMES` maps —
+  go/js/ts/html/css/json/py/rs/yaml/… plus whole-name cases like `go.mod`,
+  `Dockerfile`, `.gitignore`) becomes a `.file-glyph` — a language-brand-coloured
+  document glyph + short label on a **transparent** background; unknown types
+  fall back to the neutral `currentColor` document icon (all icons share a 15 px
+  square slot so names stay aligned). The glyphs use explicit `stroke`/`fill`, so
+  they keep their brand colour through `:hover` and the `.copied` selection
+  state (only the neutral icons tint with the row). Click discrimination is
+  via `wireClickDblClick(el,
   single, double)` (a ~220 ms timer the `dblclick` cancels):
   **directory** — single click `toggleFolderExpand`s it in place (lazy-fetches
   children via `GET …/folder?sub=<rel>`, cached with `li.dataset.loaded`),
   double click `loadFolder(rel)` navigates into it (mutates cwd);
   **file** — single click does nothing, double click `insertFileRef(rel)`
   inserts `@<rel>` into the focused pane's composer at the caret (space-padded,
-  fires `input` to refresh ref highlight). `refreshFoldersPanel` reloads when the
-  panel is open; called from `setFocusedPanel` (active-session change) and after
-  a `!cd` mutates the cwd.
+  fires `input` to refresh ref highlight). Each entry row is `tabindex="-1"`
+  (focusable on click); **Ctrl/Cmd+C** on a focused row (file *or* directory)
+  `copyFileRef`s its `@<rel>` to the system clipboard (`navigator.clipboard`
+  with an `execCommand` fallback) and remembers it in `lastCopiedRef`. The
+  copied row keeps a **persistent `.copied` highlight** (accent left-bar + soft
+  bg; a one-shot `.flash` pulse layers on at the moment of copy) so the user can
+  see which item is armed for pasting — only one row carries it at a time, and
+  `markCopiedRow` re-applies it from `lastCopiedRef` when entries are rebuilt by
+  a render or lazy expand. Pressing **Escape while the pointer is over the
+  Folders panel** (`foldersHover` gate) `clearCopiedRef`s the selection. A
+  **Ctrl/Cmd+V** in any pane's composer pastes
+  natively, except when the clipboard exactly matches `lastCopiedRef` — then the
+  composer's second `paste` listener inserts it space-padded via
+  `insertRefIntoComposer` (shared with `insertFileRef`). `refreshFoldersPanel`
+  reloads when the panel is open; called from `setFocusedPanel` (active-session
+  change) and after a `!cd` mutates the cwd.
 
 ### Per-session tool working directory
 
