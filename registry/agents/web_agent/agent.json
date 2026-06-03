@@ -8,6 +8,7 @@
   "name": "web_agent",
   "skills": null,
   "softskills_dir": "",
+  "max_instances": 5,
   "tools": [
     "Skill",
     "serpapi",
