@@ -28,6 +28,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/blouargant/yoke/core/events"
+	"github.com/blouargant/yoke/internal/agentmd"
 	"github.com/blouargant/yoke/internal/askuser"
 	"github.com/blouargant/yoke/internal/fileref"
 )
@@ -121,6 +122,19 @@ func isStdinTerminal(r io.Reader) bool {
 // runOneShot runs a single turn with prompt and returns when the model
 // finishes or ctx is cancelled.
 func runOneShot(ctx context.Context, cfg Config, prompt string) error {
+	// "#<text>" appends a memory to the project AGENT.md and exits without a turn.
+	if strings.HasPrefix(strings.TrimSpace(prompt), "#") {
+		path, err := agentmd.AppendMemory("", prompt)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(cfg.Stdout, "saved to %s\n", path)
+		return nil
+	}
+	// "/init" expands to the AGENT.md bootstrap prompt and runs as a turn.
+	if strings.EqualFold(strings.TrimSpace(prompt), "/init") {
+		prompt = agentmd.InitPrompt()
+	}
 	turnCtx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	return runTurn(turnCtx, cfg, prompt, false /*showTrace*/)
@@ -156,7 +170,21 @@ func runRepl(ctx context.Context, cfg Config) error {
 		if prompt == "" {
 			continue
 		}
-		if strings.HasPrefix(prompt, "/") {
+		// "#<text>" appends a one-line memory to the project AGENT.md instead
+		// of starting a turn — symmetric with the web UI / TUI shortcut.
+		if strings.HasPrefix(prompt, "#") {
+			if path, err := agentmd.AppendMemory("", prompt); err != nil {
+				fmt.Fprintf(cfg.Stderr, "memory: %v\n", err)
+			} else {
+				fmt.Fprintf(cfg.Stdout, "saved to %s\n", path)
+			}
+			continue
+		}
+		// "/init" expands to the AGENT.md bootstrap prompt and runs as a normal
+		// agent turn; other slash commands are REPL-only.
+		if strings.EqualFold(prompt, "/init") {
+			prompt = agentmd.InitPrompt()
+		} else if strings.HasPrefix(prompt, "/") {
 			if quit := handleSlash(cfg, prompt); quit {
 				return nil
 			}
@@ -260,6 +288,8 @@ func handleSlash(cfg Config, line string) bool {
 		fmt.Fprintln(cfg.Stdout, "Slash commands:")
 		fmt.Fprintln(cfg.Stdout, "  /quit, /exit, /q    Exit the REPL")
 		fmt.Fprintln(cfg.Stdout, "  /help, /?           Show this help")
+		fmt.Fprintln(cfg.Stdout, "  /init               Analyze the repo and write a starter AGENT.md")
+		fmt.Fprintln(cfg.Stdout, "  #<text>             Append a one-line memory to the project AGENT.md")
 		fmt.Fprintln(cfg.Stdout, "Tips:")
 		fmt.Fprintln(cfg.Stdout, "  Ctrl-C cancels an in-flight turn; Ctrl-D exits the REPL.")
 		return false

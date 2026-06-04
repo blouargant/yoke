@@ -641,6 +641,11 @@ func newEngine(d serverDeps) *gin.Engine {
 	auth.POST("/folder/new", handleGlobalFolderNew(d))
 	auth.POST("/folder/rename", handleGlobalFolderRename(d))
 	auth.POST("/folder/move", handleGlobalFolderMove(d))
+	// AGENT.md project memory: the "#" quick-append shortcut and the shared
+	// "/init" bootstrap prompt.
+	auth.GET("/agentmd/init-prompt", handleAgentMDInitPrompt)
+	auth.POST("/sessions/:id/agentmd/append", handleAgentMDAppend(d))
+	auth.POST("/agentmd/append", handleGlobalAgentMDAppend(d))
 	auth.GET("/complete", handleComplete(d))
 	auth.GET("/complete-file", handleCompleteFile(d))
 	auth.POST("/fileref/resolve", handleFileRefResolve(d))

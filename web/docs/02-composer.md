@@ -29,7 +29,8 @@ Uploads are session-scoped and garbage-collected when the session is deleted.
 Type `/` (or click the `/` button) to open the slash menu. Slash commands
 are short prompts the agent expands into a full instruction — for example:
 
-- `/init` — write or refresh a CLAUDE.md file describing the codebase.
+- `/init` — analyze the repository and write a starter **AGENT.md** project
+  memory file (see **Project Memory (AGENT.md)**).
 - `/review` — review the pending changes on the current branch.
 - `/security-review` — run a focused security audit.
 
@@ -62,6 +63,19 @@ shown in a green terminal-style block right in the chat.
 - **Not part of the conversation.** Shell output is a live convenience: it is
   shown in the transcript but is *not* sent to the model and does *not* survive
   a page reload.
+
+## Project memory (`#`)
+
+Start a message with `#` to append the rest of the line as a one-line note to
+the project **AGENT.md** instead of sending it to the agent:
+
+```
+#always run `make fmt` before committing
+```
+
+The note is saved under a `## Notes` section of the repository's `AGENT.md`
+(created if missing) and is loaded into the agent's context on every later turn.
+See **Project Memory (AGENT.md)** for the full picture.
 
 ### Tab completion
 

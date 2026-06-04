@@ -41,6 +41,7 @@ import (
 	"github.com/blouargant/yoke/core/events"
 	"github.com/blouargant/yoke/core/llm"
 	"github.com/blouargant/yoke/core/tools"
+	"github.com/blouargant/yoke/internal/agentmd"
 	"github.com/blouargant/yoke/internal/askuser"
 	"github.com/blouargant/yoke/internal/fileref"
 	"github.com/blouargant/yoke/internal/paths"
@@ -346,7 +347,7 @@ func Run(ctx context.Context, cfg Config) error {
 
 	// Slash-command autocomplete: suggest matching commands when the
 	// user starts typing "/".
-	slashCommands := []string{"/help", "/compress", "/create-skill", "/create-skill ", "/update-skill ", "/learn", "/learn-now", "/learn-now ", "/learn ", "/status", "/upload ", "/new"}
+	slashCommands := []string{"/help", "/compress", "/create-skill", "/create-skill ", "/update-skill ", "/learn", "/learn-now", "/learn-now ", "/learn ", "/status", "/init", "/upload ", "/new"}
 	slashCommandsDisplay := []string{
 		"/help",
 		"/compress",
@@ -358,6 +359,7 @@ func Run(ctx context.Context, cfg Config) error {
 		"/learn-now <reason>",
 		"/learn <reason>",
 		"/status",
+		"/init",
 		"/upload <path>",
 		"/new",
 	}
@@ -1313,6 +1315,10 @@ func Run(ctx context.Context, cfg Config) error {
 			}
 			appendChat("[green]uploaded[-] %s\n", staged)
 			appendChat("[gray]Reference it in your next prompt — the agent's fs tools can read it directly.[-]\n")
+		case "init":
+			appendChat("\n[::b]assistant[-]\n")
+			appendChat("[green]Initializing AGENT.md[-] — the agent will analyze the repo and write the file.\n")
+			go send(agentmd.InitPrompt())
 		case "new":
 			chooseSquadModal(func(squad string) { createSession(squad) })
 		case "help":
@@ -1324,7 +1330,9 @@ func Run(ctx context.Context, cfg Config) error {
 			appendChat("  [aqua]/learn [reason][-]        Mark this session for soft-skill curation.\n")
 			appendChat("  [aqua]/learn-now [reason][-]  Mark and trigger soft-skill curation immediately.\n")
 			appendChat("  [aqua]/status[-]              Show current session and curation status.\n")
+			appendChat("  [aqua]/init[-]                Analyze the repo and write a starter AGENT.md.\n")
 			appendChat("  [aqua]/upload <path>[-]        Stage a file under the current session's uploads dir.\n")
+			appendChat("  [aqua]#<text>[-]              Append a one-line memory to the project AGENT.md.\n")
 			appendChat("  [aqua]/new[-]                  Create a new session (squad picker).\n")
 			appendChat("  [aqua]/help[-]                Show this help.\n")
 			appendChat("\nSession sidebar (Tab to focus): [aqua]n[-] new, [aqua]a[-] archive, [aqua]d[-] delete, [aqua]Enter[-] switch.\n")
@@ -1372,6 +1380,30 @@ func Run(ctx context.Context, cfg Config) error {
 				out, newCwd, _ := tools.RunBashInteractive(ctx, command, getBashCwd(sid), 0)
 				setBashCwd(sid, newCwd)
 				appendChat("[gray]── %s ──[-]\n%s\n", tview.Escape(newCwd), tview.Escape(out))
+			}()
+			return
+		}
+		// Hash memory: "#<text>" appends a one-line memory to the project
+		// AGENT.md (resolved from the session CWD) instead of being sent to the
+		// agent — symmetric with the "!" shell-escape.
+		if strings.HasPrefix(strings.TrimSpace(prompt), "#") {
+			text := strings.TrimSpace(strings.TrimSpace(prompt)[1:])
+			input.SetText("")
+			if text == "" {
+				return
+			}
+			sid := ""
+			if cur := current.Load(); cur != nil {
+				sid = cur.ID
+			}
+			go func() {
+				appendChat("\n[::b]you[-]\n\n[teal]#[-]%s\n", tview.Escape(text))
+				path, err := agentmd.AppendMemory(getBashCwd(sid), text)
+				if err != nil {
+					appendChat("[red]%s[-]\n", tview.Escape(err.Error()))
+					return
+				}
+				appendChat("[gray]── saved to %s ──[-]\n", tview.Escape(path))
 			}()
 			return
 		}

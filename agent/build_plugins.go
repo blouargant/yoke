@@ -83,6 +83,11 @@ func buildPlugins(
 	if _, cp, err := cache.Plugin("cache"); err == nil {
 		plugins = append(plugins, cp)
 	}
+	// AGENT.md project memory: inject the resolved hierarchy into the
+	// leader/root system instruction per turn (no-op when no AGENT.md exists).
+	if amd, err := agentMDPlugin("agentmd"); err == nil {
+		plugins = append(plugins, amd)
+	}
 	if cmp, _, _, err := compress.PluginWithTools("compress", compress.Config{
 		// Per-session audit file so concurrent users / sessions
 		// never share a counter or overwrite each other's summaries.

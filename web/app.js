@@ -4120,6 +4120,15 @@ async function sendMessage(panel) {
     await runBangCommand(prompt.slice(1), panel);
     return;
   }
+  // Hash memory: "#<text>" appends a one-line memory to the project AGENT.md
+  // instead of being sent to the agent (symmetric with the "!" shell-escape).
+  if (prompt.startsWith("#") && pendingFiles.length === 0) {
+    panel.els.prompt.value = "";
+    autoGrowPrompt(panel);
+    hideSlashMenu();
+    await runHashMemory(prompt.slice(1), panel);
+    return;
+  }
   if (!panel.sessionId) await newChat(panel);
   if (!panel.sessionId) return;
 
@@ -4383,6 +4392,7 @@ const BUILTIN_SLASH_COMMANDS = [
   { cmd: "/learn",         args: "[reason]", desc: "Mark session for soft-skill curation (runs on session end)", builtin: true },
   { cmd: "/learn-now",     args: "[reason]", desc: "Immediately run soft-skill curation and show result", builtin: true },
   { cmd: "/status",        args: "",       desc: "Show current session info", builtin: true },
+  { cmd: "/init",          args: "",       desc: "Analyze the repo and write a starter AGENT.md", builtin: true },
 ];
 const BUILTIN_NAMES = new Set(BUILTIN_SLASH_COMMANDS.map(c => c.cmd.slice(1)));
 
@@ -4651,6 +4661,31 @@ async function runBangCommand(command, panel) {
   scrollBottom(panel, true);
 }
 
+// runHashMemory appends a one-line memory ("#<text>") to the project AGENT.md
+// resolved from the pane's working directory. It does not start a chat or send
+// anything to the agent — symmetric with the "!" shell-escape.
+async function runHashMemory(text, panel) {
+  text = text.trim();
+  if (!text) return;
+  const base = panel.sessionId
+    ? `/api/sessions/${panel.sessionId}/agentmd/append`
+    : `/api/agentmd/append`;
+  try {
+    const res = await apiFetch(base, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json();
+    if (!res.ok) appendCommandBubble(data.error || `error ${res.status}`, true, panel);
+    else {
+      appendCommandBubble(`Saved to \`${data.path}\``, false, panel);
+      refreshFoldersPanel();
+    }
+  } catch (e) {
+    appendCommandBubble("error: " + e, true, panel);
+  }
+}
+
 // appendBashBlock renders the command header + a pending output area.
 function appendBashBlock(container, command) {
   const row = document.createElement("div");
@@ -4758,7 +4793,9 @@ async function handleSlashCommand(raw, panel) {
         "- `/update-skill <name>` — Update an existing skill playbook with agent guidance\n" +
         "- `/learn [reason]` — Mark session for soft-skill curation (runs on session end)\n" +
         "- `/learn-now [reason]` — Immediately run soft-skill curation and show result\n" +
-        "- `/status` — Show current session info";
+        "- `/status` — Show current session info\n" +
+        "- `/init` — Analyze the repo and write a starter AGENT.md\n\n" +
+        "Tip: start a line with `#` to append a one-line memory to the project AGENT.md.";
       if (userSlashCommands.length) {
         body += "\n\n**User commands**\n\n" + userSlashCommands.map(c => {
           const args = c.args ? ` ${c.args}` : "";
@@ -4868,6 +4905,25 @@ async function handleSlashCommand(raw, panel) {
           panel
         );
       });
+      break;
+    }
+
+    case "init": {
+      let prompt;
+      try {
+        const res = await apiFetch("/api/agentmd/init-prompt");
+        const d = await res.json();
+        prompt = d.prompt;
+      } catch (err) {
+        appendCommandBubble(String(err), true, panel);
+        return;
+      }
+      if (!prompt) {
+        appendCommandBubble("Could not load the /init prompt.", true, panel);
+        return;
+      }
+      appendCommandBubble("Initializing AGENT.md — the agent will analyze the repo and write the file.", false, panel);
+      await sendSkillPrompt(prompt, panel);
       break;
     }
 

@@ -243,6 +243,7 @@ Resulting tags are applied to `_stats.json` via `Stats.RecordTag`.
 | `internal/skills/` | Skill loader: `load_skill`, `list_skills` (reads `registry/skills/<name>/SKILL.md`) |
 | `internal/shellcomplete/` | Dependency-free bash-like tab completion (`Complete(line, cwd)`): `$PATH` executables for the first token, filesystem paths otherwise. Backs the `!` shell-escape completion in TUI + web. `CompletePath(token, cwd)` is the path-only variant backing `@file` reference completion |
 | `internal/fileref/` | "@path" chat file references: `Spans`/`Tokens`/`Classify`/`Resolve`/`Context`. Parses `@`-prefixed path tokens (at line start or after whitespace, so emails are excluded), classifies them as file/dir/missing, and inlines referenced **file** contents as an extra user-turn part. Shared by the server, TUI, and CLI send paths; the grammar is mirrored in `web/app.js` |
+| `internal/agentmd/` | AGENT.md project memory (yoke's `CLAUDE.md` equivalent): `Resolve(cwd)` discovers + concatenates AGENT.md across layers (system → user → `.agents/` → project walk-up) with a per-cwd mtime cache; `InitPrompt()` is the shared `/init` bootstrap prompt; `AppendMemory(cwd, line)` backs the `#` shortcut. Injected into the leader/root system instruction per turn by the `agentmd` plugin ([agent/agentmd_plugin.go](agent/agentmd_plugin.go), registered in [agent/build_plugins.go](agent/build_plugins.go)) |
 | `internal/softskills/` | Curator output: `load_softskill`, `list_softskills` (reads `softskills/`); `Stats` sidecar + `ReflectHeuristic` (deterministic per-skill helpful/harmful/neutral tagging); `recall.go` adds the embedder-gated `recall_softskills` semantic-rank tool |
 | `internal/semindex/` | Reusable persistence + query layer over a go-turbovec `IdMapIndex` (`.tvim` + `.meta.json` sidecar + manifest); `Open`/`Upsert`/`Query`/`Remove`/`Save`. Backs all five recall features; nil-embedder handles degrade with `ErrNoEmbedder` |
 | `internal/precedents/` | Cross-session precedent index over `semindex` at `index/precedents`; indexes each session's goal + decisions; `recall_precedents` tool |
@@ -648,6 +649,44 @@ collapse state in `localStorage`), and the TUI `archivedPane` in the left column
 ([internal/tui/tui.go](internal/tui/tui.go), toggled with **Ctrl-A**; `a` archives
 the highlighted session, `u` unarchives, `d` deletes). Viewing an archived session
 disables the composer in both surfaces.
+
+### Project memory (`AGENT.md`), `/init`, and `#`
+
+Yoke's equivalent of Claude Code's `CLAUDE.md`. `AGENT.md` files are discovered,
+concatenated, and **injected into the leader/root system instruction on every
+turn**, resolved against the **session's working directory** (the same per-session
+`bashCwd` the Folders panel / `!cd` mutate) — so multiple sessions rooted in
+different folders each get their own project memory.
+
+- **Discovery + injection** ([internal/agentmd/](internal/agentmd/)
+  `Resolve(cwd)`): concatenates AGENT.md ascending by precedence — system
+  (`/etc/yoke`, via `paths.SystemDir()`), user (`$YOKE_HOME`), each `.agents/`
+  (and `agents/`) layer, then the project walk-up from the git/repo root down to
+  `cwd` (most specific last). Wrapped in a `<project-context source="AGENT.md">`
+  container; per-cwd cache keyed by contributing files' size+mtime, so per-turn
+  calls are cheap. Empty when no AGENT.md exists anywhere → **byte-identical
+  no-op**. Injected by the `agentmd` plugin ([agent/agentmd_plugin.go](agent/agentmd_plugin.go)),
+  a `BeforeModelCallback` registered in [agent/build_plugins.go](agent/build_plugins.go)
+  that prepends the block to `req.Config.SystemInstruction`. cwd inside the
+  callback comes from `fstools.CwdFor(ctx, ctx.SessionID())` (the context-carried
+  `WithCwd` value, falling back to the session resolver; new export in
+  [core/tools/cwd.go](core/tools/cwd.go)). Because the block is stable per project
+  across turns, the system-prompt prefix cache still hits.
+- **`/init`** — `agentmd.InitPrompt()` is a shared bootstrap instruction sent to
+  the leader as a normal turn (the agent explores the repo and writes
+  `AGENT.md`). Wired as a built-in on all three surfaces: web
+  ([web/app.js](web/app.js) `handleSlashCommand` `case "init"`, fetching
+  `GET /api/agentmd/init-prompt` for one source of truth), TUI
+  ([internal/tui/tui.go](internal/tui/tui.go) `handleShortcut`), CLI
+  ([internal/cli/cli.go](internal/cli/cli.go) `runRepl` + `runOneShot`). Reserved
+  in `usercommands.ReservedNames` so user commands can't shadow it.
+- **`#` shortcut** — a composer line starting with `#` appends a one-line memory
+  to the **project** `AGENT.md` (git root from cwd, else cwd) via
+  `agentmd.AppendMemory`, **not** sent to the agent (symmetric with `!`). Server
+  routes `POST /api/sessions/:id/agentmd/append` + session-less `POST /api/agentmd/append`
+  ([server/agentmd.go](server/agentmd.go), same token-only host-fs trust model as
+  the `!` escape / Monaco save). Web `runHashMemory`, TUI `send` `#` branch, CLI
+  `runRepl`/`runOneShot` all handle it locally.
 
 ### Interactive shell-escape (`!` commands)
 
