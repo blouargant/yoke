@@ -10,17 +10,26 @@ import (
 // initPrompt is the shared "/init" instruction sent to the leader as a normal
 // user turn on every surface (web UI, TUI, CLI). It asks the agent to inspect
 // the repository and write a starter AGENT.md.
-const initPrompt = `Analyze this repository and create an ` + FileName + ` file at the project root (the repository's top level) that documents how an AI coding agent should work in this codebase.
+const initPrompt = `Analyze this project and create an ` + FileName + ` file at its root that documents how an AI agent should work here. The project may be code, but it may equally be documentation, data, research, configuration, or prose — adapt to whatever you actually find rather than assuming a software codebase.
 
-Use your file-system tools to explore: read the README, build/config files, and a representative sample of the source tree. Then write ` + FileName + ` (overwrite it if it already exists, after reading it first to preserve anything still useful). Structure it with concise Markdown sections such as:
+First explore with your file-system tools: read the README or equivalent overview, any manifest/build/config files, and a representative sample of the contents. Then write ` + FileName + ` (if it already exists, read it first and preserve anything still accurate). Include only the sections that apply; common ones are:
 
-- A one-line description of what the project is.
-- **Commands**: how to build, test, run, and lint (copy the exact commands).
-- **Architecture**: the high-level structure and the key packages/directories and their roles.
-- **Conventions**: naming, formatting, and any project-specific patterns a contributor must follow.
-- **Gotchas**: non-obvious rules, precedence chains, or pitfalls.
+- A one-line description of what the project is and its purpose.
+- **Commands / workflows**: how to build, test, run, lint, or otherwise operate on it — only if such commands exist.
+- **Structure**: the key files, directories, or components and their roles.
+- **Conventions**: naming, formatting, and patterns a contributor must follow.
+- **Gotchas**: non-obvious rules, precedence, or pitfalls — for each, name the trap and the symptom of getting it wrong.
 
-Keep it factual and derived from the actual code — do not invent commands or structure. When done, briefly summarize what you wrote.`
+The document is only useful if it is correct, so:
+
+- Verify every exact token (a command, path, filename, key, identifier) by reading the file that defines or produces it — do not write it from assumption. If you cannot confirm a literal, describe its shape ("a per-item JSON file under the logs directory") rather than inventing a precise name.
+- When project documentation, READMEs, or skill/notes files state a literal (a path, command, or name), treat them as leads to verify, not as authoritative — confirm against the code or file that actually defines it, since docs drift out of sync with the implementation.
+- When you list a set (commands, tools, fields, subdirectories), enumerate the complete set from its source of truth, not a sample — readers treat an omission as "does not exist".
+- Do not hard-code values that drift (version numbers, counts, dates, ports, model or dependency names). Name the file that holds the current value instead, or use a neutral placeholder.
+- State the general rule first; mark special cases as exceptions rather than presenting an exception as the rule.
+- Favor what an agent cannot cheaply rediscover by looking around — gotchas, precedence, rationale, conventions — over exhaustive file-by-file inventories, which go stale fastest. Aim for a document a fresh agent can absorb in one read.
+
+Keep it factual and derived from what is actually present — do not invent. When done, briefly summarize what you wrote.`
 
 // InitPrompt returns the shared "/init" bootstrap instruction.
 func InitPrompt() string { return initPrompt }
