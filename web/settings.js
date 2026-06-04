@@ -3346,7 +3346,10 @@ const BASE_PATH = window.BASE_PATH || "";
 
       const commit = () => {
         if (kindSel.value === "object") {
-          d[key][idx] = { pattern: patIn.value, reason: reaIn.value };
+          // Preserve fields the form doesn't expose (cwd, tools) so editing a
+          // rule's pattern/reason never silently drops its tool scope.
+          const prev = (d[key][idx] && typeof d[key][idx] === "object") ? d[key][idx] : {};
+          d[key][idx] = { ...prev, pattern: patIn.value, reason: reaIn.value };
         } else {
           d[key][idx] = patIn.value;
         }

@@ -32,16 +32,24 @@ const (
 )
 
 // Rule is one entry in the JSON config. It may be written as a bare string
-// (just the pattern) or as an object {pattern, reason, cwd}.
+// (just the pattern) or as an object {pattern, reason, cwd, tools}.
 //
 // CWD, when non-empty, limits the rule to invocations whose current
 // working directory is that path or a sub-directory of it. Used by
 // "Allow in this project" persisted approvals so they don't leak to
 // other projects.
+//
+// Tools, when non-empty, limits the rule to calls of those tools (matched
+// case-insensitively by tool name). An empty list matches every tool. This
+// scopes command-oriented patterns (e.g. the "mkfs"/"rm -rf" safety floor)
+// to the Bash tool so they never fire against the *content* of a Write/Edit
+// — writing a file that merely mentions "mkfs" is harmless and must not be
+// denied.
 type Rule struct {
-	Pattern string `json:"pattern"`
-	Reason  string `json:"reason,omitempty"`
-	CWD     string `json:"cwd,omitempty"`
+	Pattern string   `json:"pattern"`
+	Reason  string   `json:"reason,omitempty"`
+	CWD     string   `json:"cwd,omitempty"`
+	Tools   []string `json:"tools,omitempty"`
 	re      *regexp.Regexp
 }
 
@@ -137,27 +145,33 @@ func (r *Rules) compile() error {
 func (r *Rules) Check(toolName, input, cwd string) (Decision, string) {
 	probe := toolName + " " + input
 	for _, rl := range r.AlwaysDeny {
-		if matchRule(&rl, probe, cwd) {
+		if matchRule(&rl, toolName, probe, cwd) {
 			return DecisionDeny, rl.Reason
 		}
 	}
 	for _, rl := range r.AlwaysAllow {
-		if matchRule(&rl, probe, cwd) {
+		if matchRule(&rl, toolName, probe, cwd) {
 			return DecisionAllow, rl.Reason
 		}
 	}
 	for _, rl := range r.AskUser {
-		if matchRule(&rl, probe, cwd) {
+		if matchRule(&rl, toolName, probe, cwd) {
 			return DecisionAsk, rl.Reason
 		}
 	}
 	return DecisionAsk, "command is not on the allow list — confirm before running"
 }
 
-// matchRule reports whether r matches probe under cwd. A rule without a
-// CWD constraint matches anywhere; with one, the current working
-// directory must be the configured path or a sub-directory of it.
-func matchRule(r *Rule, probe, cwd string) bool {
+// matchRule reports whether r matches probe under cwd for a call of
+// toolName. A rule with a non-empty Tools list only matches when toolName
+// is one of those tools (so a Bash-scoped safety-floor rule never fires on
+// a Write's file content). A rule without a CWD constraint matches
+// anywhere; with one, the current working directory must be the configured
+// path or a sub-directory of it.
+func matchRule(r *Rule, toolName, probe, cwd string) bool {
+	if !r.matchesTool(toolName) {
+		return false
+	}
 	if r.re == nil || !r.re.MatchString(probe) {
 		return false
 	}
@@ -165,6 +179,21 @@ func matchRule(r *Rule, probe, cwd string) bool {
 		return true
 	}
 	return cwdMatches(r.CWD, cwd)
+}
+
+// matchesTool reports whether the rule applies to a call of toolName. An
+// empty Tools list applies to every tool; otherwise the tool name must
+// match one of the listed names, compared case-insensitively.
+func (r *Rule) matchesTool(toolName string) bool {
+	if len(r.Tools) == 0 {
+		return true
+	}
+	for _, t := range r.Tools {
+		if strings.EqualFold(t, toolName) {
+			return true
+		}
+	}
+	return false
 }
 
 // cwdMatches reports whether candidate is scope or a sub-directory of

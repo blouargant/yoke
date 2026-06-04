@@ -576,7 +576,7 @@ Two roots, resolved by [internal/paths/paths.go](internal/paths/paths.go):
 | `YOKE_SKILLS_REGISTRY_DIR` | Where the web UI installs imported skills (default `$YOKE_HOME/registry/skills`) |
 | `YOKE_AGENTS_REGISTRY_DIR` | Where the web UI installs imported agents (default `$YOKE_HOME/registry/agents`) |
 | `YOKE_DEBUG` | Log full conversation/event payloads + per-stream SSE timing line |
-| `YOKE_LLM_STREAM_STALL_TIMEOUT` | Max idle gap between streamed chunks before the LLM read is aborted (Go duration, default `30s`; `0` disables). Guards against an upstream/gateway that streams partial text then goes silent without `[DONE]` or closing — otherwise the turn freezes "mid sentence" until the 5-minute client timeout. Applies to both the OpenAI/compat and Anthropic adapters ([core/llm/stall.go](core/llm/stall.go)). |
+| `YOKE_LLM_STREAM_STALL_TIMEOUT` | Max idle gap between streamed chunks before the LLM read is aborted (Go duration, default `10m`; `0` disables). Guards against an upstream/gateway that streams partial text then goes silent without `[DONE]` or closing — otherwise the turn freezes "mid sentence" until the 5-minute client timeout. Applies to both the OpenAI/compat and Anthropic adapters ([core/llm/stall.go](core/llm/stall.go)). |
 
 ### Permission prompts (ask_user) and grant scopes
 
@@ -599,6 +599,24 @@ The session-approval cache ([core/permissions/cache.go](core/permissions/cache.g
 holds two granularities: per-call (`m`) and per-tool (`tools`); a per-tool
 grant short-circuits before per-call. Both are wiped by `Forget(sessionID)`
 on `EventSessionEnd`.
+
+**Tool-scoped rules (`tools`)** — a `Rule` may carry an optional `tools` list
+(matched case-insensitively by tool name); when non-empty the rule only fires
+for those tools, when empty (the default) it matches every tool. This exists
+because `Check` builds its probe from `toolName + " " + flattenArgs(args)` — the
+**full JSON of the tool's arguments**, including a `Write`/`Edit`'s file
+`content` — so an unscoped command pattern like `\bmkfs\b` would otherwise deny a
+Write whose content merely *mentions* `mkfs` (this is exactly what broke `/init`
+writing AGENT.md, since the generated doc describes the bash safety floor). The
+shipped command-oriented deny **and** ask_user rules in `permissions.json` are
+therefore tagged `"tools": ["Bash"]` (rm/mkfs/dd/fork-bomb/curl|sh/git-flags/
+sudo/kubectl/…), while **path-based** rules (`.ssh/`, `.aws/`, `/etc/shadow`) and
+the already tool-anchored rules (`^(write|edit|revert) …`) stay unscoped so they
+keep guarding the file tools. Enforced in `matchRule`/`matchesTool`
+([core/permissions/permissions.go](core/permissions/permissions.go)). The web UI
+Permissions form preserves `tools`/`cwd` on edited rules
+([web/settings.js](web/settings.js) `renderPermRule` `commit` spreads the prior
+object) so a UI save never drops a rule's tool scope.
 
 **Persisted-rule breadth** ([core/permissions/persist.go](core/permissions/persist.go)
 `buildApprovalRule`) differs by tool: file tools (`Read`/`Write`/`Edit`/`revert`)
@@ -873,7 +891,22 @@ working directory" below): navigating the panel changes where the agent's
   composer's second `paste` listener inserts it space-padded via
   `insertRefIntoComposer` (shared with `insertFileRef`). `refreshFoldersPanel`
   reloads when the panel is open; called from `setFocusedPanel` (active-session
-  change) and after a `!cd` mutates the cwd.
+  change) and after a `!cd` mutates the cwd. The reload **preserves the expanded
+  subtree** (it snapshots the expanded dir `rel`s, reloads, then re-expands the
+  survivors shallowest-first) so an automatic refresh never collapses what the
+  user opened.
+- **Auto-sync on agent / shell file changes.** The panel reflects filesystem
+  changes made *during* a turn without a manual reload. `scheduleFoldersRefresh`
+  (debounced 250 ms, no-op when collapsed) drives it from three triggers in
+  [web/app.js](web/app.js): (1) the **`file_changed`** SSE event — when its path
+  is `pathUnderFoldersDir`, the panel live-refreshes (this is what makes a
+  `/init`-created `AGENT.md`, or any agent `Write`/`Edit`/`revert`, appear); (2)
+  the end of every turn (the SSE `finally`, gated to `activeSessionId`) as a
+  catch-all for changes that surface no `file_changed` — notably folders
+  created/removed via the **Bash** tool (`mkdir`/`rm`/`mv`); (3) any **`!` shell
+  command** (`runBangCommand` now refreshes after every command, not just `!cd`)
+  and the **`#` memory** append (`runHashMemory`). So agent writes, agent Bash fs
+  ops, and user `!`/`#` actions all keep the panel current.
 - **Right-click context menu** (`openFolderCtxMenu` → `#folder-ctx-menu`,
   body-appended `position:fixed` so it escapes panel overflow; dismissed on any
   click / right-click / scroll / Escape / blur / resize — the click+contextmenu+

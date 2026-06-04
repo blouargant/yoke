@@ -17,10 +17,10 @@ import (
 // would otherwise hang until the client's 5-minute total timeout, freezing the
 // turn "mid sentence". Override via YOKE_LLM_STREAM_STALL_TIMEOUT (a Go
 // duration such as "20s" or "90s"); a value <= 0 disables the guard.
-const defaultStreamStallTimeout = 30 * time.Second
+const defaultStreamStallTimeout = 10 * time.Minute
 
 // errStreamStalled is yielded when the stall guard aborts a streaming read.
-var errStreamStalled = errors.New("stream stalled")
+var errStreamStalled = errors.New("The session has been running for too long without an update")
 
 func streamStallTimeout() time.Duration {
 	if v := strings.TrimSpace(os.Getenv("YOKE_LLM_STREAM_STALL_TIMEOUT")); v != "" {
@@ -87,7 +87,7 @@ func (g *stallGuard) Read(p []byte) (int, error) {
 		}
 	}
 	if err != nil && g.stalled.Load() {
-		return n, fmt.Errorf("%w: no data for %s (upstream may have dropped the stream)", errStreamStalled, g.timeout)
+		return n, fmt.Errorf("%w (no response for %s). Please try again.", errStreamStalled, g.timeout)
 	}
 	return n, err
 }

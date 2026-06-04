@@ -76,6 +76,41 @@ func TestRulesCheckHonorsDenyAllowAndAsk(t *testing.T) {
 	}
 }
 
+func TestCheckHonorsToolScope(t *testing.T) {
+	t.Parallel()
+
+	rules := &Rules{
+		AlwaysDeny: []Rule{
+			// Bash-scoped safety floor: must fire on a Bash command but
+			// never on a Write whose file content merely mentions "mkfs".
+			{Pattern: `\bmkfs(\.[a-z0-9]+)?\b`, Reason: "creates a filesystem", Tools: []string{"Bash"}},
+			// Unscoped path rule: applies to every tool, including Write.
+			{Pattern: `\.ssh/id_rsa\b`, Reason: "ssh key"},
+		},
+	}
+	if err := rules.compile(); err != nil {
+		t.Fatalf("compile() = %v", err)
+	}
+
+	// Bash running mkfs → denied.
+	if d, r := rules.Check("Bash", `{"command":"mkfs.ext4 /dev/sdb"}`, ""); d != DecisionDeny || r != "creates a filesystem" {
+		t.Fatalf("Bash mkfs Check() = (%v, %q), want deny", d, r)
+	}
+	// Write whose content documents the safety floor (mentions mkfs) → the
+	// Bash-scoped rule must NOT fire (this is the /init AGENT.md regression).
+	if d, _ := rules.Check("Write", `{"file_path":"AGENT.md","content":"the safety floor blocks mkfs and rm -rf /"}`, ""); d == DecisionDeny {
+		t.Fatalf("Write mentioning mkfs Check() = %v, want non-deny", d)
+	}
+	// Unscoped path rule still guards every tool.
+	if d, _ := rules.Check("Write", `{"file_path":"/home/u/.ssh/id_rsa","content":"x"}`, ""); d != DecisionDeny {
+		t.Fatalf("Write to .ssh/id_rsa Check() = %v, want deny", d)
+	}
+	// Tool match is case-insensitive.
+	if d, _ := rules.Check("bash", `{"command":"mkfs.ext4 /dev/sdb"}`, ""); d != DecisionDeny {
+		t.Fatalf("lowercase bash mkfs Check() = %v, want deny", d)
+	}
+}
+
 func TestCheckHonorsCWDScope(t *testing.T) {
 	t.Parallel()
 

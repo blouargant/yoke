@@ -2,27 +2,33 @@
   "always_deny": [
     {
       "pattern": "\\brm\\s+-[rRfF]+\\s+(/|~|\\$HOME)(\\s|\"|$|;|&|\\|)",
-      "reason": "rm -r/-f on /, $HOME, or ~ is catastrophic"
+      "reason": "rm -r/-f on /, $HOME, or ~ is catastrophic",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\brm\\s+-[rRfF]+\\s+/(etc|usr|bin|sbin|lib|lib64|boot|home|var|opt|sys|proc|dev|root|srv|run)(\\b|/)",
-      "reason": "rm -r/-f on a system directory is catastrophic"
+      "reason": "rm -r/-f on a system directory is catastrophic",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bmkfs(\\.[a-z0-9]+)?\\b",
-      "reason": "creating a filesystem destroys all data on the target device"
+      "reason": "creating a filesystem destroys all data on the target device",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bdd\\b[^\"]*\\bof=/dev/(sd[a-z]|hd[a-z]|nvme|mmcblk|loop|disk|sr[0-9]|xvd|vd[a-z])",
-      "reason": "dd to a block device destroys all data on it"
+      "reason": "dd to a block device destroys all data on it",
+      "tools": ["Bash"]
     },
     {
       "pattern": ":\\s*\\(\\s*\\)\\s*\\{[^}]*\\}\\s*;\\s*:",
-      "reason": "fork bomb pattern"
+      "reason": "fork bomb pattern",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bchattr\\s+\\+i\\b",
-      "reason": "setting the immutable attribute is suspect and rarely intended"
+      "reason": "setting the immutable attribute is suspect and rarely intended",
+      "tools": ["Bash"]
     },
     {
       "pattern": "/etc/(shadow|gshadow|sudoers|sudoers\\.d)\\b",
@@ -30,23 +36,28 @@
     },
     {
       "pattern": "(>>?|\\btee\\b|\\bcat\\s+>\\s*)\\s*/etc/(passwd|hosts|fstab|crontab|cron\\.d)\\b",
-      "reason": "modifying system boot/host files is forbidden"
+      "reason": "modifying system boot/host files is forbidden",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\b(curl|wget)\\b[^\"]*\\|\\s*(sudo\\s+)?(ba)?sh\\b",
-      "reason": "piping a remote payload into a shell is a classic attack vector"
+      "reason": "piping a remote payload into a shell is a classic attack vector",
+      "tools": ["Bash"]
     },
     {
       "pattern": "--no-verify\\b",
-      "reason": "bypassing git hooks is forbidden — fix the failing hook instead"
+      "reason": "bypassing git hooks is forbidden — fix the failing hook instead",
+      "tools": ["Bash"]
     },
     {
       "pattern": "--no-gpg-sign\\b|commit\\.gpgsign\\s*=\\s*false",
-      "reason": "bypassing GPG signing is forbidden"
+      "reason": "bypassing GPG signing is forbidden",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\biptables\\s+-F\\b|\\bufw\\s+disable\\b|\\bsystemctl\\s+(stop|disable)\\s+(firewalld|ufw|nftables)\\b",
-      "reason": "disabling the host firewall is forbidden"
+      "reason": "disabling the host firewall is forbidden",
+      "tools": ["Bash"]
     },
     {
       "pattern": "(?i)^(write|edit|revert) .*\"file_path\"\\s*:\\s*\"softskills/",
@@ -54,7 +65,8 @@
     },
     {
       "pattern": "\"command\":\"[^\"]*(>>?|\\btee\\b|\\brm\\b|\\bmv\\b|\\bcp\\b)[^\"]*softskills/",
-      "reason": "softskills/ is curator-managed; use curate_session instead"
+      "reason": "softskills/ is curator-managed; use curate_session instead",
+      "tools": ["Bash"]
     },
     {
       "pattern": "(?i)^(write|edit|revert) .*\"file_path\"\\s*:\\s*\"(/etc/yoke/|/etc/passwd|/etc/shadow|/etc/sudoers)",
@@ -88,177 +100,220 @@
     },
     {
       "pattern": "\"command\"\\s*:\\s*\"\\s*ls(\\s|\"|;|\\|)",
-      "reason": "ls is read-only"
+      "reason": "ls is read-only",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\"command\"\\s*:\\s*\"\\s*pwd\\s*\"",
-      "reason": "pwd is read-only"
+      "reason": "pwd is read-only",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\"command\"\\s*:\\s*\"\\s*echo\\b",
-      "reason": "echo is non-destructive (still flagged by softskills/cred-write rules above when piped)"
+      "reason": "echo is non-destructive (still flagged by softskills/cred-write rules above when piped)",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\"command\"\\s*:\\s*\"\\s*(cat|head|tail|wc|file|stat|less|more)\\s",
-      "reason": "common read-only inspection commands"
+      "reason": "common read-only inspection commands",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\"command\"\\s*:\\s*\"\\s*grep\\b",
-      "reason": "grep is read-only"
+      "reason": "grep is read-only",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\"command\"\\s*:\\s*\"\\s*find\\b[^\"]*-name\\b",
-      "reason": "find with -name and no mutating actions"
+      "reason": "find with -name and no mutating actions",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\"command\"\\s*:\\s*\"\\s*go\\s+(build|test|vet|fmt|mod\\s+(tidy|download|verify|graph)|list|env|version|doc)\\b",
-      "reason": "non-destructive go subcommands"
+      "reason": "non-destructive go subcommands",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\"command\"\\s*:\\s*\"\\s*git\\s+(status|log|diff|show|branch|remote|config\\s+--get|ls-files|describe|blame|fetch)\\b",
-      "reason": "read-only git subcommands (fetch downloads but does not mutate the working tree)"
+      "reason": "read-only git subcommands (fetch downloads but does not mutate the working tree)",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\"command\"\\s*:\\s*\"\\s*npm\\s+(test|run\\s+build|run\\s+lint|run\\s+typecheck|ls|view)\\b",
-      "reason": "non-destructive npm subcommands"
+      "reason": "non-destructive npm subcommands",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\"command\"\\s*:\\s*\"\\s*docker\\s+(ps|images|logs|inspect|version|info)\\b",
-      "reason": "read-only docker subcommands"
+      "reason": "read-only docker subcommands",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\"command\"\\s*:\\s*\"\\s*kubectl\\s+(get|describe|logs|top|explain|version|cluster-info|api-resources|api-versions)\\b",
-      "reason": "read-only kubectl subcommands"
+      "reason": "read-only kubectl subcommands",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\"command\"\\s*:\\s*\"\\s*kubectl\\s+config\\s+(current-context|get-contexts|view|get-clusters|get-users)\\b",
-      "reason": "read-only kubectl config subcommands"
+      "reason": "read-only kubectl config subcommands",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\"command\"\\s*:\\s*\"\\s*(make|just)\\s+(test|build|fmt|vet|lint|check|tidy)\\b",
-      "reason": "common non-destructive make/just targets"
+      "reason": "common non-destructive make/just targets",
+      "tools": ["Bash"]
     }
   ],
   "ask_user": [
     {
       "pattern": "\\brm\\b",
-      "reason": "rm can destroy files irreversibly — confirm the target"
+      "reason": "rm can destroy files irreversibly — confirm the target",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\b(mv|cp)\\s+[^\"]*\\s+(/|~|\\$HOME)/",
-      "reason": "moving or copying into an absolute or home path mutates outside the project — confirm"
+      "reason": "moving or copying into an absolute or home path mutates outside the project — confirm",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bchmod\\s+([0-7]{3,4}|[ugoa+=rwxXst-]+)\\b",
-      "reason": "chmod changes file permissions — confirm the target"
+      "reason": "chmod changes file permissions — confirm the target",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bchown\\b",
-      "reason": "chown changes file ownership — confirm the target"
+      "reason": "chown changes file ownership — confirm the target",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bsudo\\b|\\bdoas\\b|\\bsu\\s+-",
-      "reason": "privilege escalation — confirm before running"
+      "reason": "privilege escalation — confirm before running",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bsystemctl\\s+(start|stop|restart|reload|enable|disable|mask|unmask)\\b",
-      "reason": "systemd unit state change — confirm the target unit"
+      "reason": "systemd unit state change — confirm the target unit",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\b(service|launchctl)\\s+",
-      "reason": "service control — confirm the target"
+      "reason": "service control — confirm the target",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\b(kill|pkill|killall)\\b",
-      "reason": "process termination — confirm the target"
+      "reason": "process termination — confirm the target",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\b(mount|umount)\\b",
-      "reason": "mounting or unmounting a filesystem affects the whole host — confirm"
+      "reason": "mounting or unmounting a filesystem affects the whole host — confirm",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\b(apt|apt-get|yum|dnf|brew|pacman|zypper|apk)\\s+(install|remove|purge|upgrade|update|add|del|erase)\\b",
-      "reason": "OS package install/remove — confirm before mutating the host"
+      "reason": "OS package install/remove — confirm before mutating the host",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bpip3?\\s+install\\b|\\bpipx\\s+install\\b|\\buv\\s+(pip\\s+)?install\\b",
-      "reason": "installing a Python package — confirm before adding to the environment"
+      "reason": "installing a Python package — confirm before adding to the environment",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bnpm\\s+install\\s+(-g|--global)\\b|\\byarn\\s+global\\s+add\\b|\\bpnpm\\s+add\\s+(-g|--global)\\b",
-      "reason": "installing a global node package — confirm"
+      "reason": "installing a global node package — confirm",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bcargo\\s+install\\b|\\bgo\\s+install\\b|\\bgem\\s+install\\b",
-      "reason": "installing a binary into the toolchain — confirm"
+      "reason": "installing a binary into the toolchain — confirm",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bcurl\\b[^\"]*\\s(-o|-O|--output)\\b",
-      "reason": "curl downloading to disk — confirm the destination"
+      "reason": "curl downloading to disk — confirm the destination",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bwget\\b",
-      "reason": "wget downloads to disk by default — confirm the destination"
+      "reason": "wget downloads to disk by default — confirm the destination",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bgit\\s+push\\b",
-      "reason": "git push mutates the remote — confirm branch and remote"
+      "reason": "git push mutates the remote — confirm branch and remote",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bgit\\s+(reset\\s+--hard|clean\\s+-[fd]+|checkout\\s+--|branch\\s+-D|tag\\s+-d|push\\s+.*--force)",
-      "reason": "destructive git operation — confirm before running"
+      "reason": "destructive git operation — confirm before running",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bgh\\s+(pr|issue)\\s+(merge|close|delete)\\b|\\bgh\\s+release\\s+(create|delete)\\b",
-      "reason": "gh CLI operation that mutates the remote project — confirm"
+      "reason": "gh CLI operation that mutates the remote project — confirm",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bdocker\\s+(run|rm|rmi|exec|build|push|stop|kill|prune|system\\s+prune)\\b",
-      "reason": "docker operation with side effects — confirm"
+      "reason": "docker operation with side effects — confirm",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\b(docker-compose|docker\\s+compose)\\s+(up|down|restart|rm|build|push)\\b",
-      "reason": "docker-compose lifecycle operation — confirm"
+      "reason": "docker-compose lifecycle operation — confirm",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bkubectl\\s+(apply|delete|patch|edit|scale|rollout|drain|cordon|uncordon|create|replace|exec|cp|port-forward)\\b",
-      "reason": "kubectl operation with cluster side effects — confirm"
+      "reason": "kubectl operation with cluster side effects — confirm",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bhelm\\s+(install|upgrade|uninstall|rollback)\\b",
-      "reason": "helm release change — confirm"
+      "reason": "helm release change — confirm",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bterraform\\s+(apply|destroy|import|state\\s+(rm|mv))\\b|\\btofu\\s+(apply|destroy|import)\\b",
-      "reason": "infrastructure change — confirm"
+      "reason": "infrastructure change — confirm",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\b(ansible-playbook|ansible)\\s+",
-      "reason": "ansible execution — confirm target hosts and playbook"
+      "reason": "ansible execution — confirm target hosts and playbook",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bssh\\s+[^\"]*\\s",
-      "reason": "outbound SSH connection — confirm destination and command"
+      "reason": "outbound SSH connection — confirm destination and command",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bnc\\s|\\bncat\\s|\\bsocat\\s",
-      "reason": "raw network tool — confirm intent"
+      "reason": "raw network tool — confirm intent",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bcd\\s+/",
-      "reason": "Changing directory to an absolute path escapes the project root — confirm the destination"
+      "reason": "Changing directory to an absolute path escapes the project root — confirm the destination",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bcd\\s+~",
-      "reason": "Changing directory into $HOME escapes the project root — confirm the destination"
+      "reason": "Changing directory into $HOME escapes the project root — confirm the destination",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bcd\\s+\\$",
-      "reason": "Changing directory using a $VAR escapes the project root — confirm the destination"
+      "reason": "Changing directory using a $VAR escapes the project root — confirm the destination",
+      "tools": ["Bash"]
     },
     {
       "pattern": "\\bpushd\\s+(/|~|\\$)",
-      "reason": "pushd to an absolute, home, or $VAR path escapes the project root — confirm the destination"
+      "reason": "pushd to an absolute, home, or $VAR path escapes the project root — confirm the destination",
+      "tools": ["Bash"]
     },
     {
       "pattern": "^install_remote_skill ",

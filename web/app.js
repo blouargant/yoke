@@ -1171,10 +1171,12 @@ function isEditorTab(key) { return typeof key === "string" && key.startsWith(EDI
 function editorPathOf(key) { return key.slice(EDITOR_TAB_PREFIX.length); }
 function editorKey(abs) { return EDITOR_TAB_PREFIX + abs; }
 function baseName(p) { const s = String(p).replace(/\/+$/, ""); const i = s.lastIndexOf("/"); return i >= 0 ? s.slice(i + 1) : s; }
+function dirOf(p) { const s = String(p).replace(/\/+$/, ""); const i = s.lastIndexOf("/"); return i > 0 ? s.slice(0, i) : (i === 0 ? "/" : ""); }
 
 const editorModels = new Map(); // absPath → monaco.ITextModel
 const editorDirty  = new Map(); // absPath → bool (unsaved changes)
 const editorStale  = new Map(); // absPath → bool (agent changed file on disk while we held unsaved edits)
+const editorRoots  = new Map(); // absPath → the Folders-panel ROOT dir the file was opened from
 const editorApplyingExternal = new Set(); // absPaths currently being refreshed from disk (suppress dirty marking)
 
 // extension → Monaco language id (best-effort; unknown → plaintext).
@@ -1281,6 +1283,14 @@ async function mountEditor(panel, abs) {
   }
   updateEditorStaleUI(panel);
   panel._editor.focus();
+  // Anchor the Folders panel to the ROOT this file was opened from (mirrors
+  // mountTerminal's cwd re-alignment). The editor tab carries no chat session,
+  // so without this the panel would fall back to the global root. Fall back to
+  // the file's own directory when the open-time root is unknown (layout restore).
+  if (focusedPanelId === panel.id && !foldersCollapsed()) {
+    const root = editorRoots.get(abs) || dirOf(abs);
+    if (root && root !== foldersDir) loadFolder(root);
+  }
 }
 
 // saveEditor writes the model's current content to disk via PUT /api/file.
@@ -1317,6 +1327,7 @@ function disposeEditor(abs) {
   editorModels.delete(abs);
   editorDirty.delete(abs);
   editorStale.delete(abs);
+  editorRoots.delete(abs);
 }
 
 // paneShowingEditor returns the pane whose Monaco instance currently displays
@@ -1394,6 +1405,11 @@ function absForRel(rel) {
 function openFileInEditor(rel) {
   const abs = absForRel(rel);
   const key = editorKey(abs);
+  // Remember the Folders-panel ROOT this file was opened from, so when the
+  // (sessionless) editor tab is activated the panel stays anchored to that dir
+  // instead of snapping back to the global "no session" root (where yoke-server
+  // was started). Only set on first open — a later refocus keeps the original.
+  if (!editorRoots.has(abs)) editorRoots.set(abs, foldersDir || "");
   const existing = panelsWithTab(key)[0];
   if (existing) { setFocusedPanel(existing.id); activateTab(existing, key); return; }
   const panel = focusedPanel() || panels[0];
@@ -4370,8 +4386,10 @@ async function sendMessage(panel) {
 
         case "file_changed": {
           // The agent wrote to a file on disk; live-refresh any open editor tab
-          // showing it (or flag it stale when it has unsaved edits).
+          // showing it (or flag it stale when it has unsaved edits), and reflect
+          // a new/changed file in the Folders panel when it's in the visible dir.
           onAgentFileChanged(data.path);
+          if (pathUnderFoldersDir(data.path)) scheduleFoldersRefresh();
           break;
         }
 
@@ -4458,6 +4476,9 @@ async function sendMessage(panel) {
     // Track turn count so appendNewPushTurns knows where to start.
     sessionTurnCounts.set(sessionId, (sessionTurnCounts.get(sessionId) ?? 0) + 1);
     loadSessions();
+    // Catch any filesystem changes the turn made that didn't surface a
+    // `file_changed` event (e.g. folders created/removed via the Bash tool).
+    if (sessionId === activeSessionId) scheduleFoldersRefresh();
     scrollBottom(panel);
   }
 }
@@ -4736,8 +4757,9 @@ async function runBangCommand(command, panel) {
     if (!res.ok) setBashBlockOutput(block, data.error || `error ${res.status}`, "");
     else {
       setBashBlockOutput(block, data.output || "", data.dir || "");
-      // A "!cd" may have moved the cwd; keep the Folders panel in sync.
-      if (data.dir && data.dir !== foldersDir && sessionId === activeSessionId) refreshFoldersPanel();
+      // The command may have moved the cwd ("!cd") or created/removed files;
+      // keep the Folders panel in sync either way.
+      if (sessionId === activeSessionId) refreshFoldersPanel();
     }
   } catch (e) {
     setBashBlockOutput(block, "error: " + e, "");
@@ -5764,8 +5786,46 @@ els.foldersResize.addEventListener("pointerdown", (e) => {
 });
 
 // refreshFoldersPanel reloads the listing when the panel is open. Called when the
-// active session changes or after a "!cd" mutates the cwd.
-function refreshFoldersPanel() { if (!foldersCollapsed()) loadFolder(); }
+// active session changes, after a "!cd" mutates the cwd, or when the agent
+// creates/changes files or folders (see scheduleFoldersRefresh). The reload
+// preserves the currently expanded subtree so an agent-driven refresh doesn't
+// collapse what the user opened.
+async function refreshFoldersPanel() {
+  if (foldersCollapsed()) return;
+  const expanded = [];
+  for (const li of els.foldersList.querySelectorAll("li.folder-dir.expanded")) {
+    if (li.dataset.rel) expanded.push(li.dataset.rel);
+  }
+  await loadFolder();
+  if (!expanded.length) return;
+  // Shallowest first so a parent is expanded (and its children fetched) before
+  // we try to re-expand a nested child.
+  expanded.sort((a, b) => a.split("/").length - b.split("/").length);
+  for (const rel of expanded) {
+    const li = [...els.foldersList.querySelectorAll("li.folder-dir")].find(x => x.dataset.rel === rel);
+    if (!li || li.classList.contains("expanded")) continue;
+    const row = li.querySelector(".folder-entry-row");
+    const children = li.querySelector(".folder-children");
+    if (row && children) await toggleFolderExpand(li, row, children, rel);
+  }
+}
+
+// scheduleFoldersRefresh coalesces bursty refresh requests (an agent turn can
+// touch many files) into a single reload shortly after activity settles.
+let _foldersRefreshTimer = null;
+function scheduleFoldersRefresh() {
+  if (foldersCollapsed()) return;
+  clearTimeout(_foldersRefreshTimer);
+  _foldersRefreshTimer = setTimeout(() => { refreshFoldersPanel(); }, 250);
+}
+
+// pathUnderFoldersDir reports whether an absolute path lives inside the folder
+// the panel is currently showing (so we only refresh on relevant changes).
+function pathUnderFoldersDir(abs) {
+  if (!abs || !foldersDir) return false;
+  const root = foldersDir === "/" ? "/" : foldersDir.replace(/\/+$/, "") + "/";
+  return abs.startsWith(root);
+}
 
 // folderApiBase returns the folder endpoint for the current context: the active
 // session's working directory when one is active, else the global "no session"
