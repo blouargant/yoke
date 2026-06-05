@@ -401,6 +401,7 @@ function closePanel(panel) {
     else releaseSessionIfUnviewed(k);
   }
   if (panel._editor) { panel._editor.dispose(); panel._editor = null; }
+  if (panel._composerRO) { panel._composerRO.disconnect(); panel._composerRO = null; }
   rebuildChatDOM();
   setFocusedPanel(focusedPanelId);
   saveLayout();
@@ -678,6 +679,20 @@ function attachPaneHandlers(panel) {
     panel._stick = isAtBottom(pe.transcript);
     updatePinnedForScroll(panel);
   });
+
+  // The composer floats over the transcript, so publish its measured height as
+  // --composer-overlay-h on the pane root: #transcript's bottom padding and the
+  // ask-user slot's bottom margin track it so content always clears the card.
+  // Re-pin to bottom while stuck so a growing composer never hides the last line.
+  if (window.ResizeObserver) {
+    const ro = new ResizeObserver(() => {
+      const h = pe.composerWrap.offsetHeight || 0;
+      panel.root.style.setProperty("--composer-overlay-h", h + "px");
+      if (panel._stick) scrollBottom(panel);
+    });
+    ro.observe(pe.composerWrap);
+    panel._composerRO = ro;
+  }
 }
 
 // uploadPickedFiles uploads files to a pane's session (creating one if the

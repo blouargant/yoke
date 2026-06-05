@@ -1379,7 +1379,10 @@ body.resizing #sidebar-resize { transition: none; }
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px 0 24px;
+  /* Bottom padding clears the floating composer (height tracked per-pane in
+     --composer-overlay-h by a ResizeObserver) plus the fade, so the last
+     message can always scroll above the editor card. */
+  padding: 16px 0 calc(52px + var(--composer-overlay-h, 0px));
   /* Reserve the scrollbar gutter on BOTH edges so the message column stays
    * centred within the full chat width — matching the floating #prompt-header
    * (which sits outside the scroll container and has no scrollbar). Without
@@ -1926,14 +1929,47 @@ body.resizing #sidebar-resize { transition: none; }
 
 /* ─── Composer ─────────────────────────────────────────────── */
 #composer-wrap {
+  /* Floating composer: lifted OUT of the flex flow (position: absolute) so the
+     transcript fills the whole pane height behind it — chat text scrolls up
+     behind the editor and dissolves into the background (the ::before gradient)
+     instead of being hard-cut by a solid bar. The interactive card (#composer)
+     re-enables pointer events; the transparent side gutters stay click-through
+     so the transcript shows + scrolls behind them. Kept below the pane-picker
+     overlay (z-index 4) so a draft/empty pane still hides it. */
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
   flex-shrink: 0;
-  background: var(--bg-panel);
-  padding: 0 0 12px 0;
-  position: relative;
+  background: transparent;
+  padding: 0 16px 12px;
   display: flex;
   flex-direction: column;
   gap: 0;
   height: var(--composer-h, auto);
+  pointer-events: none;
+}
+/* Only the real controls capture pointer events; the rest of the wrap is
+   click-through onto the transcript behind it. */
+#composer,
+#composer-resize,
+#slash-menu { pointer-events: auto; }
+
+/* The shadow/fade that masks transcript text passing behind the floating
+   composer: a transparent→bg gradient rising from the editor card up into the
+   transcript, so text progressively disappears as it approaches the editor
+   rather than being abruptly clipped. Sits behind the card (z-index 0). */
+#composer-wrap::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: -52px;
+  background: linear-gradient(to bottom, transparent, var(--bg-panel) 65%);
+  pointer-events: none;
+  z-index: 0;
 }
 
 /* Archived sessions are read-only: dim the composer to signal it's inert. */
@@ -1947,11 +1983,10 @@ body.resizing #sidebar-resize { transition: none; }
   top: -5px;
   left: 0;
   right: 0;
-  /* Match the centred editor column so the line spans only the editor width
-   * (background-clip: content-box keeps the line inside the 20px padding). */
-  max-width: min(var(--col-w), 100%);
+  /* Match the centred editor card so the line spans only the card width. */
+  max-width: 700px;
   margin: 0 auto;
-  padding: 0 20px;
+  padding: 0;
   box-sizing: border-box;
   height: 10px;
   z-index: 1;
@@ -1969,15 +2004,22 @@ body.resizing-composer { cursor: ns-resize; }
 body.resizing-composer #composer-resize { transition: none; }
 
 #composer {
+  /* The floating editor card: opaque surface above the fade gradient. */
+  position: relative;
+  z-index: 1;
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-width: min(var(--col-w), 100%);
+  max-width: 700px;
   margin: 0 auto;
-  padding: 0 20px;
+  padding: 10px 12px;
   width: 100%;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-bubble, 0 4px 14px rgba(0, 0, 0, 0.4));
 }
 
 /* The composer is a two-layer stack: a backdrop (.prompt-highlight) that
@@ -2848,6 +2890,13 @@ body.resizing-composer #composer-resize { transition: none; }
   display: flex;
   flex-direction: column;
   background: var(--bg-panel);
+}
+/* Only reserve space ABOVE the floating composer when the slot actually holds a
+   question — otherwise (the normal, empty case) it must take zero height so the
+   transcript fills the whole pane behind the floating composer and fades. When
+   active, lift the ask-user card above the composer + its fade. */
+#ask-user-slot:not(:empty) {
+  margin-bottom: calc(var(--composer-overlay-h, 0px) + 56px);
 }
 
 .ask-user-row {
