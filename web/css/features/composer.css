@@ -1,0 +1,485 @@
+/* Composer: input, attach button/chips/popup, slash-command menu
+   Part of web/css/styles.css — edit this partial, not the @import barrel. */
+
+/* ─── Composer ─────────────────────────────────────────────── */
+#composer-wrap {
+  /* Floating composer: lifted OUT of the flex flow (position: absolute) so the
+     transcript fills the whole pane height behind it — chat text scrolls up
+     behind the editor and dissolves into the background (the ::before gradient)
+     instead of being hard-cut by a solid bar. The interactive card (#composer)
+     re-enables pointer events; the transparent side gutters stay click-through
+     so the transcript shows + scrolls behind them. Kept below the pane-picker
+     overlay (z-index 4) so a draft/empty pane still hides it. */
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  flex-shrink: 0;
+  background: transparent;
+  padding: 0 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  /* Auto height: the panel grows to fit attachments + actions; the manual
+     resize height (--composer-h) is applied to the editor stack, not here. */
+  height: auto;
+  pointer-events: none;
+}
+/* Only the real controls capture pointer events; the rest of the wrap is
+   click-through onto the transcript behind it. */
+#composer,
+#composer-resize,
+#slash-menu { pointer-events: auto; }
+
+/* The shadow/fade that masks transcript text passing behind the floating
+   composer: a transparent→bg gradient rising from the editor card up into the
+   transcript, so text progressively disappears as it approaches the editor
+   rather than being abruptly clipped. Sits behind the card (z-index 0). */
+#composer-wrap::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: -52px;
+  background: linear-gradient(to bottom, transparent, var(--bg-panel) 65%);
+  pointer-events: none;
+  z-index: 0;
+}
+/* When an ask-user / permission card is showing, the opaque card — not the
+   composer — is what the chat sits above, so the 52px fade is unnecessary and
+   would only wash the card's bottom edge. Hide it so the card can sit just above
+   the editor with a small clean gap (see #ask-user-slot margin-bottom) instead of
+   needing a 52px clearance to escape the gradient. */
+.chat-pane:has(#ask-user-slot:not(:empty)) #composer-wrap::before {
+  display: none;
+}
+
+/* Archived sessions are read-only: dim the composer to signal it's inert. */
+#composer-wrap.archived-readonly { opacity: 0.55; }
+#composer-wrap.archived-readonly #prompt { cursor: not-allowed; }
+
+#composer-resize {
+  position: absolute;
+  /* Straddle the editor's top edge so the grab line sits ON the top of the
+   * editor rather than a few px below it. */
+  top: -5px;
+  left: 0;
+  right: 0;
+  /* Match the centred editor card so the line spans only the card width. */
+  max-width: 700px;
+  margin: 0 auto;
+  padding: 0;
+  box-sizing: border-box;
+  height: 10px;
+  z-index: 1;
+  cursor: ns-resize;
+  background: transparent;
+  background-clip: content-box;
+  transition: background 0.15s;
+}
+#composer-resize:hover,
+#composer-resize.is-dragging {
+  background: linear-gradient(to bottom, transparent 40%, var(--accent-strong) 40%, var(--accent-strong) 60%, transparent 60%);
+  background-clip: content-box;
+}
+body.resizing-composer { cursor: ns-resize; }
+body.resizing-composer #composer-resize { transition: none; }
+
+#composer {
+  /* The floating editor card: opaque surface above the fade gradient. */
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 700px;
+  margin: 0 auto;
+  padding: 10px 12px;
+  width: 100%;
+  background: var(--bubble-user-bg);
+  border: 1px solid var(--bubble-user-border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-bubble, 0 4px 14px rgba(0, 0, 0, 0.4));
+}
+
+/* The composer is a two-layer stack: a backdrop (.prompt-highlight) that
+   renders the text with "@file" references coloured, and the real <textarea>
+   on top with TRANSPARENT text (only its caret/selection show). They share
+   identical box metrics so glyphs line up exactly. See renderPromptHighlight. */
+.prompt-stack {
+  position: relative;
+  width: 100%;
+  display: block;
+}
+/* Manual resize sizes the EDITOR (the prompt stack) to --composer-h, not the
+   whole wrap — so attachment chips and the action row grow the panel's total
+   height (height: auto on the wrap) instead of stealing height from the editor. */
+#composer-wrap.is-manual .prompt-stack {
+  height: var(--composer-h);
+  min-height: 0;
+  display: flex;
+}
+#composer-wrap.is-manual .prompt-stack #prompt { flex: 1; }
+
+.prompt-highlight {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  box-sizing: border-box;
+  /* Prompt editor background follows the theme (chat panel bg). */
+  background: var(--bg-panel);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 15px;
+  font-family: inherit;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.prompt-highlight .file-ref { color: #7ee787; }
+.prompt-highlight .file-ref.file-ref-dir { color: #4fc1ff; }
+
+#prompt {
+  display: block;
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-height: calc(1.5em + 20px);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: transparent;
+  caret-color: var(--text);
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 15px;
+  font-family: inherit;
+  resize: none;
+  outline: none;
+  line-height: 1.5;
+  overflow-y: hidden;
+  transition: border-color 0.15s;
+}
+#composer-wrap.is-manual #prompt {
+  overflow-y: auto;
+}
+#prompt:focus { border-color: var(--accent-strong); }
+/* While an IME is composing, show the textarea's own (preedit) text and hide
+   the backdrop, since preedit text never reaches .value. */
+#composer-wrap.ime-composing #prompt { color: var(--text); }
+#composer-wrap.ime-composing .prompt-highlight { visibility: hidden; }
+/* Translucent selection so the coloured backdrop text shows through the
+   transparent textarea text while selecting. */
+#prompt::selection { background: rgba(79, 193, 255, 0.35); }
+#prompt::placeholder { color: #555558; }
+
+#composer-wrap.drag-over::after {
+  content: "Drop files to attach";
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 122, 204, 0.12);
+  border: 2px dashed var(--accent-strong);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-strong);
+  font-size: 15px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+#status {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-right: auto;
+  font-style: italic;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+#status.active { opacity: 1; }
+
+#status.active::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+  animation: status-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+  0%, 100% { opacity: 0.25; transform: scale(0.75); }
+  50%       { opacity: 1;    transform: scale(1);    }
+}
+
+#send {
+  background: var(--accent);
+  color: #ffffff;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+#send:hover { background: var(--accent-hover); }
+#send:disabled { background: var(--bg-active); color: #555558; cursor: not-allowed; }
+
+#cancel {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 6px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+#cancel:hover:not(:disabled) { background: #3a0d0d; color: #f48771; border-color: #6e1f1f; }
+#cancel:disabled { opacity: 0.35; cursor: not-allowed; }
+
+#slash-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 4px;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+  font-size: 16px;
+  font-weight: 600;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+  line-height: 1;
+}
+#slash-btn:hover, #slash-btn.active {
+  background: var(--bg-raised);
+  color: var(--text);
+  border-color: var(--accent-strong);
+}
+
+/* ─── Attach button ────────────────────────────────────────── */
+#attach-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 4px;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+#attach-btn:hover {
+  background: var(--bg-raised);
+  color: var(--text);
+  border-color: var(--accent-strong);
+}
+
+/* ─── Attachment chips in composer ────────────────────────── */
+#attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 2px 2px;
+}
+#attachments[hidden] { display: none; }
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #1e3a4a;
+  border: 1px solid var(--accent-strong);
+  color: #4fc3f7;
+  border-radius: 4px;
+  padding: 2px 6px 2px 8px;
+  font-size: 12px;
+  max-width: 200px;
+  overflow: hidden;
+}
+.attachment-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachment-chip-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 0 0 2px;
+  flex-shrink: 0;
+  transition: color 0.1s;
+}
+.attachment-chip-remove:hover { color: #f48771; }
+
+/* Chips shown inside a sent user bubble */
+.bubble-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.attachment-chip-sent {
+  display: inline-block;
+  background: #1a2f3a;
+  border: 1px solid #2a5a7a;
+  color: #7cb9d4;
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+
+/* ─── Slash command menu ────────────────────────────────────── */
+#slash-menu {
+  position: absolute;
+  bottom: calc(100% - 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(calc(var(--col-w) - 40px), calc(100% - 40px));
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.5);
+  z-index: 100;
+  max-height: 420px;
+  overflow-y: auto;
+}
+#slash-menu[hidden] { display: none; }
+
+.slash-menu-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--bg-raised);
+  transition: background 0.1s;
+}
+.slash-menu-item:last-child { border-bottom: none; }
+.slash-menu-item:hover, .slash-menu-item.focused { background: var(--bg-active); }
+
+.slash-menu-cmd {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 14px;
+  color: #4fc1ff;
+  flex-shrink: 0;
+}
+.slash-menu-args {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  color: #ce9178;
+  flex-shrink: 0;
+}
+.slash-menu-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+/* "+ Add command" footer row in the slash menu — visually distinct
+   from the regular command rows so it reads as an action, not a match. */
+.slash-menu-item.slash-menu-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+  font-size: 13px;
+}
+.slash-menu-add-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  background: var(--bg-active);
+  color: var(--text);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.slash-menu-item.is-user .slash-menu-cmd { color: #b48ead; }
+
+
+/* ─── Attach popup menu ────────────────────────────────────── */
+#attach-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+#attach-menu {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: 0;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  min-width: 190px;
+  z-index: 200;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+}
+#attach-menu[hidden] { display: none; }
+#attach-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 14px;
+  background: none;
+  border: none;
+  border-radius: 0;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+#attach-menu button:hover { background: var(--bg-raised); }
+#attach-menu button + button { border-top: 1px solid var(--bg-raised); }
+
+

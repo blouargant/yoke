@@ -1,0 +1,371 @@
+/* Chat panes: layout, dividers, per-pane tab bar, empty-pane picker
+   Part of web/css/styles.css — edit this partial, not the @import barrel. */
+
+/* ─── Main chat ────────────────────────────────────────────── */
+/* #chat is now a horizontal row of one-or-more .chat-pane columns separated by
+ * draggable .pane-divider handles. Each pane is an independent chat (its own
+ * transcript + composer + session). */
+/* #chat-area stacks the config banner (when present) above #chat, so the
+ * banner spans the full width and pushes the pane row down instead of sitting
+ * inside the row as a phantom column. */
+#chat-area {
+  flex: 1;
+  min-width: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#chat {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  background: var(--bg-panel);
+  /* Positioning context for the absolutely-positioned settings panel
+   * (see settings.css). Always set, not gated by a class, so the panel
+   * is correctly anchored regardless of load order. */
+  position: relative;
+}
+
+/* A single chat pane: the former #chat column layout. */
+.chat-pane {
+  flex: 1 1 0;
+  min-width: 360px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+.chat-pane.is-focused::before {
+  /* Subtle accent on the focused pane (hidden when only one pane). Kept above
+   * the tab bar (z-index 8) so the accent line reads as the active tab. */
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: var(--accent, #4a9eff);
+  z-index: 9;
+  pointer-events: none;
+}
+#chat.solo .chat-pane.is-focused::before { display: none; }
+
+
+/* Draggable vertical divider between panes. */
+.pane-divider {
+  flex: 0 0 6px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  z-index: 6;
+}
+/* Thin visible line, centered in the wider (easier-to-grab) hit area. */
+.pane-divider::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: var(--border, #333);
+}
+.pane-divider:hover::before,
+.pane-divider.is-dragging::before { background: var(--accent, #4a9eff); }
+
+/* Per-pane tab bar: a persistent strip at the top of each pane holding one tab
+ * per open session (VS Code-style), a "+" to open a new chat tab, and the
+ * split/close actions pinned to the right edge. */
+.pane-tabbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  /* Match the sidebar header (Yoke title) height: 10px×2 padding + 24px
+   * toggle button + 1px border = 45px (box-sizing: border-box). */
+  height: 45px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border, #333);
+  /* Sit above the empty-pane picker (z-index 4) so the tabs and the
+   * split/close/new actions stay visible/usable even before a session is bound. */
+  position: relative;
+  z-index: 8;
+}
+/* The scrollable strip of tabs. */
+.pane-tabs {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.pane-tabs::-webkit-scrollbar { height: 0; }
+.pane-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 90px;
+  max-width: 200px;
+  padding: 0 6px 0 12px;
+  background: transparent;
+  border-right: 1px solid var(--border, #333);
+  color: var(--text-muted, #888);
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+}
+.pane-tab:hover { background: var(--bg-raised, #2a2d2e); color: var(--text, #eee); }
+/* The active tab of the pane. */
+.pane-tab.active {
+  background: var(--bg-raised, #2a2d2e);
+  color: var(--text, #eee);
+}
+/* Brighter still when the active tab belongs to the focused pane. */
+.chat-pane.is-focused .pane-tab.active {
+  background: var(--bg-active);
+  color: var(--text-strong, #fff);
+  box-shadow: inset 0 -2px 0 var(--accent, #4a9eff);
+}
+.pane-tab-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Pending "New Chat" draft tab — no session yet, shows the start picker. */
+.pane-tab-draft .pane-tab-name { font-style: italic; }
+
+/* Busy dot — visible only while the tab's session is streaming. */
+.pane-tab-busy {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent, #4a9eff);
+  display: none;
+}
+.pane-tab.is-busy .pane-tab-busy { display: block; }
+
+/* Editor-tab file glyph (left of the filename). */
+.pane-tab-glyph {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
+.pane-tab-editor .pane-tab-name { font-style: normal; }
+/* Dirty dot — an unsaved editor tab shows a filled dot; it sits where the close
+ * button is and yields to the × on hover (VS Code behaviour). */
+.pane-tab-dirty {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text, #eee);
+  display: none;
+}
+.pane-tab.is-dirty .pane-tab-dirty { display: block; }
+.pane-tab.is-dirty:hover .pane-tab-dirty { display: none; }
+.pane-tab.is-dirty .pane-tab-close { opacity: 0; }
+.pane-tab.is-dirty:hover .pane-tab-close { opacity: .7; }
+
+/* Per-tab close button (revealed on hover / when active). */
+.pane-tab-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .1s, background .1s;
+}
+.pane-tab:hover .pane-tab-close,
+.pane-tab.active .pane-tab-close { opacity: .7; }
+.pane-tab-close:hover { opacity: 1; background: var(--bg-raised-hover, #333); }
+/* A single open tab can't be closed via its × when it's the pane's only tab in
+ * the only pane — but we keep the affordance; closeTab handles the picker. */
+
+/* "+" new-tab button. */
+.pane-newtab-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  margin-left: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim, #aaa);
+  cursor: pointer;
+}
+.pane-newtab-btn:hover { background: var(--bg-raised-hover, #333); color: var(--text, #eee); }
+
+/* Split / close actions, pinned to the right of the tab bar. */
+.pane-toolbar {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  opacity: .55;
+  transition: opacity .12s ease;
+}
+.chat-pane:hover .pane-toolbar,
+.chat-pane.is-focused .pane-toolbar { opacity: .8; }
+.pane-toolbar:hover { opacity: 1; }
+.pane-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim, #aaa);
+  cursor: pointer;
+}
+.pane-toolbar button:hover {
+  background: var(--bg-raised-hover, #333);
+  border-color: var(--border, #333);
+  color: var(--text, #eee);
+}
+/* The close button is hidden when only one pane remains. */
+#chat.solo .pane-close-btn { display: none; }
+
+/* Empty-pane session picker (shown when a pane has no bound session). */
+.pane-picker {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-panel);
+}
+.pane-picker[hidden] { display: none; }
+.pane-picker-inner {
+  width: min(420px, 80%);
+  max-height: 70%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.pane-picker-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  background: var(--bg-raised, #2a2d2e);
+  color: var(--text, #eee);
+  font-size: 14px;
+  cursor: pointer;
+}
+.pane-picker-new:hover { background: var(--bg-raised-hover, #333); }
+.pane-picker-squad {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim, #888);
+}
+.pane-picker-squad[hidden] { display: none; }
+.pane-picker-squad-label { flex: 0 0 auto; }
+.pane-picker-squad-control {
+  position: relative;
+  flex: 1 1 auto;
+}
+.pane-picker-squad-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  background: var(--bg-raised, #2a2d2e);
+  color: var(--text, #eee);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.pane-picker-squad-toggle:hover { background: var(--bg-raised-hover, #333); }
+.pane-picker-squad-icon { flex-shrink: 0; color: var(--text-muted); }
+.pane-picker-squad-name {
+  flex: 1 1 auto;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pane-picker-squad-chevron {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform 0.15s;
+}
+.pane-picker-squad-toggle[aria-expanded="true"] .pane-picker-squad-chevron { transform: rotate(180deg); }
+.pane-picker-squad-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.pane-picker-squad-menu[hidden] { display: none; }
+.pane-picker-or {
+  text-align: center;
+  color: var(--text-dim, #888);
+  font-size: 12px;
+}
+.pane-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+}
+.pane-picker-item {
+  padding: 9px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text, #eee);
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pane-picker-item:last-child { border-bottom: none; }
+.pane-picker-item:hover { background: var(--bg-raised-hover, #333); }
+.pane-picker-item.is-open { opacity: .55; }
+.pane-picker-item.is-open::after { content: " (open)"; color: var(--text-dim, #888); }
+.pane-picker-empty {
+  padding: 12px;
+  text-align: center;
+  color: var(--text-dim, #888);
+  font-size: 12px;
+}
+
+

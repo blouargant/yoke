@@ -1,0 +1,81 @@
+/* Monaco file editor tabs
+   Part of web/css/styles.css — edit this partial, not the @import barrel. */
+
+/* ─── Monaco editor tabs ───────────────────────────────────────────────────
+ * When a pane shows an editor tab it gets the `.editing` class: the chat
+ * surfaces (prompt header, transcript, ask-user slot, composer, picker) are
+ * hidden and the Monaco editor fills the pane. */
+.chat-pane.editing #prompt-header,
+.chat-pane.editing #transcript,
+.chat-pane.editing #ask-user-slot,
+.chat-pane.editing #composer-wrap,
+.chat-pane.editing .pane-picker { display: none !important; }
+.pane-editor { display: none; }
+.chat-pane.editing .pane-editor {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+}
+.pane-editor-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border, #333);
+  background: var(--bg-raised, #2a2d2e);
+}
+.pane-editor-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;        /* keep the filename (path tail) visible */
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-muted, #888);
+}
+.pane-editor-save {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--border, #333);
+  border-radius: 5px;
+  background: var(--bg, #1e1e1e);
+  color: var(--text, #eee);
+  font-size: 12px;
+  cursor: pointer;
+}
+.pane-editor-save:hover { background: var(--bg-raised-hover, #333); border-color: var(--accent-border-soft); }
+.pane-editor-save.saving { opacity: .6; pointer-events: none; }
+.pane-editor-stale {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--warn-fg, #e2c08d);
+  background: var(--warn-bg, #3a2f0a);
+  border-bottom: 1px solid var(--warn-border, #5a4a1f);
+}
+.pane-editor-stale[hidden] { display: none; }
+.pane-editor-stale > span { flex: 1 1 auto; min-width: 0; }
+.pane-editor-reload {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  border: 1px solid var(--warn-border, #5a4a1f);
+  border-radius: 5px;
+  background: var(--warn-action-bg, #8a6d1a);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+.pane-editor-reload:hover { background: var(--warn-action-hover, #a3811f); }
+.pane-editor-host { flex: 1 1 0; min-height: 0; width: 100%; }
+
+

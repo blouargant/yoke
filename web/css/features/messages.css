@@ -1,0 +1,260 @@
+/* Messages: user/pinned prompt, transcript, message rows, assistant markdown, copy/error/images
+   Part of web/css/styles.css — edit this partial, not the @import barrel. */
+
+/* ─── Shared user message style (floating header + inline bubbles) ── */
+#prompt-header,
+.bubble-user {
+  background: var(--bubble-user-bg);
+  border: 1px solid var(--bubble-user-border);
+  border-radius: 6px;
+  padding: 12px 16px;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  box-shadow: var(--shadow-bubble);
+}
+
+/* ─── Pinned user prompt (floating above transcript) ───────── */
+/* Wrapper reserves the same per-edge scrollbar gutter as #transcript so the
+   header's percentage width resolves against the identical content width as
+   the inline .msg-row bubbles — making the floating and inline prompt boxes
+   pixel-identical in width and (being centred) in horizontal position. */
+.prompt-header-wrap {
+  flex-shrink: 0;
+  padding: 0 var(--scroll-gutter);
+}
+#prompt-header {
+  display: none;
+  width: 100%;
+  max-width: min(calc(var(--col-w) - 40px), calc(100% - 40px));
+  /* 18px top = #transcript padding-top (16px) + .msg-row padding-top (2px), so
+     the floating header card sits at the exact Y of the inline bubble it
+     replaces. */
+  margin: 18px auto 0;
+  white-space: normal;
+  position: relative;
+}
+/* The pinned prompt floats above the transcript, so it gets a soft, slightly
+   stronger, downward-biased drop shadow (rather than a hard fade band beneath
+   it). The shadow follows the card's 6px radius, so its bottom corners are
+   rounded for free — it reads as the panel's own cast shadow. The tint is
+   themed via --prompt-fade: dark themes fall back to a near-black shadow; light
+   themes override it with a softer one so it never becomes a white smear. */
+#prompt-header.visible {
+  display: block;
+  box-shadow: 0 4px 12px -2px var(--prompt-fade, rgba(0, 0, 0, 0.55)),
+              0 1px 3px rgba(0, 0, 0, 0.22);
+}
+
+.pinned-prompt-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ─── Transcript ───────────────────────────────────────────── */
+#transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* Bottom padding clears the floating composer (height tracked per-pane in
+     --composer-overlay-h by a ResizeObserver) plus the fade, so the last
+     message can always scroll above the editor card. */
+  padding: 16px 0 calc(52px + var(--composer-overlay-h, 0px));
+  /* Reserve the scrollbar gutter on BOTH edges so the message column stays
+   * centred within the full chat width — matching the floating #prompt-header
+   * (which sits outside the scroll container and has no scrollbar). Without
+   * this the in-transcript column is offset by half the scrollbar width, so
+   * the pinned prompt and the inline bubble don't line up. Also prevents a
+   * sideways shift when the scrollbar appears/disappears. */
+  scrollbar-gutter: stable both-edges;
+}
+/* When an ask-user / permission card is showing it sits in-flow between the
+   transcript and the floating composer, so the transcript no longer needs to
+   reserve the composer's clearance (52px + overlay-h) — the card provides the
+   bottom boundary, and chat scrolling behind the card is occluded by the card's
+   own solid background. Collapsing that padding removes the large empty gap that
+   otherwise opens between the last chat line and the card. */
+.chat-pane:has(#ask-user-slot:not(:empty)) #transcript {
+  padding-bottom: 12px;
+}
+
+/* ─── Message rows ─────────────────────────────────────────── */
+.msg-row {
+  display: flex;
+  padding: 2px 20px;
+  max-width: min(var(--col-w), 100%);
+  width: 100%;
+  margin: 0 auto 2px;
+}
+
+/* User bubble (history — inline, shares style with #prompt-header) */
+.bubble-user {
+  width: 100%;
+}
+
+/* Three-line clamp on the user message text. Activated via JS only when
+   overflow is detected so short messages render normally. */
+.bubble-user-text.clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
+.bubble-user-toggle {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.bubble-user-toggle:hover { text-decoration: underline; }
+
+/* "@path" file references inside a user message. Valid files get a distinct
+   colour and read as links; valid directories use the regular link colour;
+   pending (not-yet-resolved) refs are dimmed; invalid refs are downgraded to
+   plain text nodes in JS so they never reach these rules. */
+.bubble-user-text a.file-ref,
+.pinned-prompt-text a.file-ref {
+  color: #7ee787;
+  text-decoration: none;
+  border-bottom: 1px dotted currentColor;
+  cursor: pointer;
+}
+.bubble-user-text a.file-ref:hover,
+.pinned-prompt-text a.file-ref:hover { text-decoration: none; border-bottom-style: solid; }
+.bubble-user-text a.file-ref.file-ref-dir,
+.pinned-prompt-text a.file-ref.file-ref-dir { color: #4fc1ff; }
+.bubble-user-text a.file-ref.file-ref-pending,
+.pinned-prompt-text a.file-ref.file-ref-pending {
+  color: inherit;
+  border-bottom-color: transparent;
+  opacity: 0.85;
+}
+
+/* Assistant content — plain text, no bubble. Adapts to the column width like
+   the user/prompt boxes (min(--col-w, 100%)) instead of a fixed 700px cap. */
+.bubble-assistant {
+  max-width: min(var(--col-w), 100%);
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.65;
+  word-break: break-word;
+  /* No pre-wrap: the streaming tail (lightInlineMd) emits explicit <br>s and
+     flushed blocks are real HTML, so raw newlines never need preserving here.
+     Keeping pre-wrap would render the literal newlines marked.parse puts
+     between block tags (e.g. </ul>\n<ul>) as visible blank lines mid-stream. */
+  white-space: normal;
+}
+
+/* Markdown inside assistant */
+.bubble-assistant p { margin: 0 0 10px; }
+.bubble-assistant p:last-child { margin-bottom: 0; }
+.bubble-assistant h1, .bubble-assistant h2, .bubble-assistant h3 {
+  margin: 14px 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+.bubble-assistant code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  font-weight: 600;
+  background: var(--bg-active);
+  border: 1px solid var(--border-strong);
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--text-strong);
+}
+.bubble-assistant pre {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.bubble-assistant pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  font-size: 13.5px;
+}
+.bubble-assistant ul, .bubble-assistant ol {
+  margin: 4px 0 10px;
+  padding-left: 22px;
+}
+.bubble-assistant li { margin-bottom: 4px; }
+.bubble-assistant a { color: #4fc1ff; text-decoration: none; }
+.bubble-assistant a:hover { text-decoration: underline; }
+.bubble-assistant strong { color: var(--text); font-weight: 600; }
+.bubble-assistant blockquote {
+  border-left: 3px solid var(--border);
+  margin: 8px 0;
+  padding-left: 12px;
+  color: var(--text-muted);
+}
+.bubble-assistant table { border-collapse: collapse; margin: 8px 0; font-size: 14px; }
+.bubble-assistant th, .bubble-assistant td {
+  border: 1px solid var(--border);
+  padding: 5px 10px;
+}
+.bubble-assistant th { background: var(--bg-panel); color: var(--text); }
+
+/* Copy button on assistant messages */
+.msg-row.assistant { position: relative; }
+.copy-msg-btn {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, border-color 0.15s;
+}
+.msg-row.assistant:hover .copy-msg-btn { opacity: 1; }
+.copy-msg-btn:hover { background: var(--bg-panel); color: var(--text); }
+.copy-msg-btn.copied { color: #4caf50; border-color: #4caf50; }
+
+/* Error */
+.bubble-error {
+  max-width: min(var(--col-w), 100%);
+  margin-left: auto;
+  margin-right: auto;
+  background: #3a0d0d;
+  border: 1px solid #6e1f1f;
+  color: #f48771;
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-family: ui-monospace, Menlo, monospace;
+  white-space: pre-wrap;
+}
+
+

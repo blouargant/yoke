@@ -1,0 +1,90 @@
+/* Shared design tokens: CSS reset, theme palette, html/body base, global scrollbar
+   Part of web/css/styles.css — edit this partial, not the @import barrel. */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+/* ─── Theme palette ────────────────────────────────────────────────────
+ * Semantic variables drive the surface/text/accent colors throughout
+ * styles.css and settings.css. Per-theme overrides live in
+ * css/themes/<name>.css — switching [data-theme] on <html> retheme the
+ * entire UI without touching any selector. */
+:root {
+  /* Layout */
+  --sidebar-w: 280px;
+  /* Chat content column width, as a % of the pane so it scales edge-to-edge
+     with the window. Leaves a margin on each side (not full-bleed). */
+  --col-w: 90%;
+  /* Per-edge scrollbar gutter reserved by #transcript (scrollbar-gutter:
+     both-edges reserves the 6px ::-webkit-scrollbar width on each side). The
+     floating prompt header lives outside the scroll container, so its wrapper
+     reserves the same gutter to keep the two prompt boxes pixel-aligned. */
+  --scroll-gutter: 6px;
+
+  /* Surfaces */
+  --bg: #1e1e1e;
+  --bg-panel: #252526;
+  --bg-raised: #2a2d2e;
+  --bg-raised-hover: #333436;
+  --bg-active: #37373d;
+  --bg-input: #3a3c3a;
+
+  /* Borders */
+  --border: #3e3e42;
+  --border-strong: #595959;
+
+  /* Text */
+  --text: #cccccc;
+  --text-strong: #ffffff;
+  --text-muted: #858585;
+  --text-faint: #5a5a5a;
+
+  /* Accent */
+  --accent: #0e639c;
+  --accent-hover: #1177bb;
+  --accent-strong: #007acc;
+  --accent-bg-soft: rgba(14, 99, 156, 0.25);
+  --accent-border-soft: rgba(14, 99, 156, 0.5);
+  --accent-hover-bg: #094771;
+
+  /* Scrollbar */
+  --scroll-thumb: #424242;
+  --scroll-thumb-hover: #525257;
+
+  /* User message bubble (kept distinct so light themes can tint it
+   * without forcing every input to match). */
+  --bubble-user-bg: #3a3c3a;
+  --bubble-user-border: #595959;
+  --shadow-bubble: 0 2px 8px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.3);
+
+  /* Danger — destructive buttons, error states */
+  --danger-fg: #f48771;
+  --danger-bg: #3a1f1f;
+  --danger-border: #5a2a2a;
+  --danger-bg-hover: #4a2525;
+  --danger-bg-soft: rgba(244, 135, 113, 0.12);
+
+  /* Warning — restart banner, advisory notices */
+  --warn-fg: #e2c08d;
+  --warn-bg: #3a2f0a;
+  --warn-border: #5a4a1f;
+  --warn-action-bg: #8a6d1a;
+  --warn-action-hover: #a3811f;
+}
+
+html, body {
+  margin: 0;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 17px;
+  line-height: 1.6;
+}
+body { display: flex; overflow: hidden; }
+
+/* ─── Scrollbars ───────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #555558; }
+

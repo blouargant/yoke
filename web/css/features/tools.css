@@ -1,0 +1,369 @@
+/* Tool blocks, todo plan widget, badge colour variants
+   Part of web/css/styles.css — edit this partial, not the @import barrel. */
+
+/* ─── Tool blocks ──────────────────────────────────────────── */
+.tool-row {
+  display: flex;
+  padding: 2px 20px;
+  max-width: min(var(--col-w), 100%);
+  width: 100%;
+  margin: 0 auto 2px;
+}
+
+.tool-block {
+  max-width: min(var(--col-w), 100%);
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  border-left: 2px solid;
+  border-radius: 0 4px 4px 0;
+  background: var(--bg-panel);
+  overflow: hidden;
+  font-size: 14px;
+}
+
+.tool-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.tool-header:hover { background: rgba(255,255,255,.04); }
+
+.tool-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--border);
+  border: 1px solid #555558;
+  transition: background 0.3s, border-color 0.3s;
+}
+.tool-dot.pending {
+  background: #d4a017;
+  border-color: #f0b429;
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+.tool-dot.done  { background: #23d18b; border-color: #23d18b; animation: none; }
+.tool-dot.error { background: #f48771; border-color: #f48771; animation: none; }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
+}
+
+.tool-badge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 10px;
+  letter-spacing: .02em;
+  flex-shrink: 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.tool-desc {
+  color: var(--text-muted);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.tool-chevron {
+  color: #555558;
+  font-size: 11px;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+  margin-left: auto;
+}
+.tool-block.expanded .tool-chevron { transform: rotate(90deg); }
+
+.tool-body {
+  display: none;
+  padding: 0 12px 10px;
+}
+/* Use child combinator so expanding a parent doesn't bleed into nested items. */
+.tool-block.expanded > .tool-body { display: block; }
+
+/* Nested tool calls (sub-agent internal activity) */
+.tool-nested {
+  margin: 8px 0 4px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.tool-nested-item {
+  background: var(--bg);
+}
+
+.tool-nested-item .tool-header {
+  padding: 4px 10px;
+}
+
+.tool-nested-item .tool-badge {
+  font-size: 11px;
+  padding: 0 5px;
+}
+
+.tool-nested-item .tool-body {
+  padding: 0 10px 8px;
+}
+
+.tool-section { margin-top: 8px; }
+.tool-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  display: inline-block;
+}
+.label-in    { background: #1e3a5f; color: #4fc1ff; }
+.label-out   { background: #133929; color: #23d18b; }
+.label-error { background: #400d0d; color: #f48771; }
+
+.tool-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.tool-pre.output { color: var(--text); }
+.tool-pre.tool-error { color: #f48771; }
+
+/* ─── Todo plan widget ─────────────────────────────────────────────────────
+   The todo_* tools render as a live, always-expanded checklist (no fold) so
+   users can follow plan execution. Done items strike through; the in-progress
+   item shows a spinning marker. */
+.todo-block {
+  max-width: 700px;
+  width: 100%;
+  margin: 0 auto;
+  border-left: 2px solid #6c75d8; /* indigo — matches the "Todo" tool badge */
+  border-radius: 0 4px 4px 0;
+  background: var(--bg-panel);
+  padding: 8px 14px 10px;
+  font-size: 14px;
+}
+
+/* Bash "!" shell-escape block: a terminal-style command + output panel. */
+.bash-block {
+  max-width: 700px;
+  width: 100%;
+  margin: 0 auto;
+  border-left: 2px solid #3fb950; /* green — terminal accent */
+  border-radius: 0 4px 4px 0;
+  background: var(--bg-panel);
+  padding: 8px 14px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+.bash-block-cmd {
+  color: #3fb950;
+  font-weight: 600;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.bash-block-out {
+  margin: 6px 0 0;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+.bash-block-cwd {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.todo-header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 7px;
+}
+.todo-bullet {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #23d18b;
+  flex-shrink: 0;
+}
+.todo-title {
+  font-weight: 700;
+  color: var(--text-strong);
+  letter-spacing: .01em;
+}
+.todo-progress {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.todo-chevron {
+  color: #555558;
+  font-size: 11px;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+  transform: rotate(90deg); /* expanded by default */
+}
+.todo-block.collapsed .todo-chevron { transform: rotate(0deg); }
+
+/* The header is a toggle; only collapsed blocks hide their items. */
+.todo-header { cursor: pointer; user-select: none; }
+.todo-header:hover { color: var(--text-strong); }
+.todo-block.collapsed .todo-items { display: none; }
+.todo-block.collapsed .todo-header { margin-bottom: 0; }
+.todo-block.collapsed { padding-bottom: 8px; }
+
+.todo-items {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-left: 1px;
+}
+.todo-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  line-height: 1.45;
+}
+.todo-check {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-muted);
+}
+.todo-text { color: var(--text); word-break: break-word; }
+
+/* pending — empty box, normal text */
+.todo-item.status-pending .todo-check { background: transparent; }
+
+/* done — filled box with check, struck-through faint text */
+.todo-item.status-done .todo-check {
+  background: #23d18b;
+  border-color: #23d18b;
+  color: #10231a;
+}
+.todo-item.status-done .todo-text {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+/* failed — danger box, struck-through */
+.todo-item.status-failed .todo-check {
+  background: var(--danger-fg);
+  border-color: var(--danger-fg);
+  color: #2a0d0d;
+}
+.todo-item.status-failed .todo-text {
+  color: var(--danger-fg);
+  text-decoration: line-through;
+}
+
+/* in_progress — spinning marker, emphasised text */
+.todo-item.status-in_progress .todo-check {
+  border-color: var(--accent-strong);
+  color: var(--accent-strong);
+  animation: todo-spin 1.6s linear infinite;
+}
+.todo-item.status-in_progress .todo-text {
+  color: var(--text-strong);
+  font-weight: 500;
+}
+
+@keyframes todo-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* Inline images surfaced from tool outputs (image_generator, MCP image tools).
+   Thumbnails wrap to multiple rows; click-through opens via the same blob URL. */
+.tool-image-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.tool-image-gallery img {
+  max-width: 240px;
+  max-height: 240px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #2a2a2a);
+  background: #1a1a1a;
+  object-fit: contain;
+}
+
+/* Local images embedded by markdown `![](path)` in assistant replies.
+   Constrain to the bubble width and avoid layout jumps while the blob URL
+   loads (the src is swapped in by rewriteLocalImages). */
+.bubble-assistant img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  display: block;
+  margin: 8px 0;
+}
+.local-media-error-msg {
+  display: inline-block;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: #f48771;
+  background: #2a1414;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+/* ─── Badge color variants ─────────────────────────────────── */
+.badge-amber   { background: #3d2b00; color: #ce9178; }
+.border-amber  { border-color: #ce9178; }
+
+.badge-sky     { background: #0c2240; color: #4fc1ff; }
+.border-sky    { border-color: #4fc1ff; }
+
+.badge-teal    { background: #0d3030; color: #4ec9b0; }
+.border-teal   { border-color: #4ec9b0; }
+
+.badge-emerald { background: #133929; color: #23d18b; }
+.border-emerald{ border-color: #23d18b; }
+
+.badge-purple  { background: #2a1f4a; color: #c586c0; }
+.border-purple { border-color: #c586c0; }
+
+.badge-rose    { background: #400d0d; color: #f48771; }
+.border-rose   { border-color: #f48771; }
+
+.badge-orange  { background: #3d2000; color: #ffab40; }
+.border-orange { border-color: #ffab40; }
+
+.badge-indigo  { background: #1a1f3d; color: #7b9bf8; }
+.border-indigo { border-color: #7b9bf8; }
+
+.badge-slate   { background: var(--bg-raised); color: var(--text-muted); }
+.border-slate  { border-color: #555558; }
+
+

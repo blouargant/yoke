@@ -1,0 +1,570 @@
+/* Sidebar: rail mode, tooltip, new-chat pill, session rows, archived panel, resize handle
+   Part of web/css/styles.css — edit this partial, not the @import barrel. */
+
+/* ─── Sidebar ──────────────────────────────────────────────── */
+/* ─── Themed hover tooltip ─────────────────────────────────────
+   Opt in by setting data-tip="…" on any element instead of the native
+   `title`, so tooltips track the active theme. Rendered by a single
+   body-appended `#tip-layer` element (see app.js `initTooltips`) rather
+   than a CSS `::after` pseudo, so the tooltip is `position: fixed` and
+   escapes every `overflow`/stacking context — sidebar and archived-list
+   action buttons no longer clip or mask it. Default placement is *above*
+   the target, flipping below only when there is no room near the
+   viewport top. `.model-status-dot` keeps its own pseudo tooltip
+   (settings.css) and is skipped by the JS layer. */
+[data-tip] { position: relative; }
+#tip-layer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9999;
+  pointer-events: none;
+  /* Short tips stay on one line (the box shrink-wraps); long descriptions
+     soft-wrap onto multiple lines within max-width instead of stretching into
+     one unreadable strip. */
+  white-space: normal;
+  max-width: 18rem;
+  text-align: left;
+  background: var(--bg-raised);
+  color: var(--text-strong);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 0.35rem 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  box-shadow: var(--shadow-bubble, 0 4px 14px rgba(0, 0, 0, 0.4));
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+#tip-layer.below { transform: translateY(-4px); }
+#tip-layer.show { opacity: 1; transform: translateY(0); }
+#tip-layer::after {
+  content: "";
+  position: absolute;
+  left: var(--tip-arrow-x, 50%);
+  margin-left: -4px;
+  width: 8px;
+  height: 8px;
+  background: var(--bg-raised);
+  transform: rotate(45deg);
+}
+/* tooltip above the target → arrow points down off the bottom edge */
+#tip-layer:not(.below)::after {
+  bottom: -5px;
+  border-right: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border-strong);
+}
+/* tooltip below the target → arrow points up off the top edge */
+#tip-layer.below::after {
+  top: -5px;
+  border-left: 1px solid var(--border-strong);
+  border-top: 1px solid var(--border-strong);
+}
+
+#sidebar {
+  width: var(--sidebar-w);
+  min-width: 0;
+  flex-shrink: 0;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width 0.15s ease;
+}
+/* ─── Collapsed → icon rail ──────────────────────────────────
+ * Instead of hiding the sidebar entirely, shrink it to a narrow
+ * rail that keeps the key icons (toggle, new chat, sessions,
+ * settings) visible and clickable. Session rows collapse to a
+ * two-letter glyph (e.g. "alive-sole" → "al"). */
+#sidebar.collapsed {
+  width: var(--sidebar-rail-w, 52px) !important;
+}
+body.resizing #sidebar { transition: none; }
+
+/* Hide everything that needs horizontal room in rail mode. */
+#sidebar.collapsed .app-name,
+#sidebar.collapsed .new-chat-text,
+#sidebar.collapsed #squad-toggle,
+#sidebar.collapsed #squad-menu,
+#sidebar.collapsed .sidebar-section-label,
+#sidebar.collapsed #archived-panel,
+#sidebar.collapsed #folders-panel,
+#sidebar.collapsed #settings-menu,
+#sidebar.collapsed .session-name-row,
+#sidebar.collapsed .session-bottom-row,
+#sidebar.collapsed #settings-btn span {
+  display: none;
+}
+
+/* Header: drop the app name, centre + flip the toggle so it
+ * points the way it now expands. */
+#sidebar.collapsed #sidebar-header { justify-content: center; padding: 10px 4px; }
+#sidebar.collapsed #sidebar-toggle svg { transform: rotate(180deg); }
+
+/* New-chat pill becomes a square icon button. */
+#sidebar.collapsed #new-chat-wrap { margin: 10px 8px 4px; }
+#sidebar.collapsed #new-chat { padding: 0; border-radius: 10px; }
+
+/* Session list: centred two-letter glyph avatars. */
+#sidebar.collapsed #session-list { padding: 6px 4px; }
+#sidebar.collapsed #session-list li {
+  padding: 3px 0;
+  display: flex;
+  justify-content: center;
+  background: none;
+  box-shadow: none;
+}
+.session-abbr { display: none; }
+#sidebar.collapsed .session-abbr {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: var(--bg-raised);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s, box-shadow 0.1s;
+}
+#sidebar.collapsed #session-list li:hover .session-abbr { color: var(--text); }
+#sidebar.collapsed #session-list li.active .session-abbr {
+  background: var(--bg-active);
+  color: var(--text);
+}
+#sidebar.collapsed #session-list li.active-focused .session-abbr {
+  color: var(--text-strong);
+  box-shadow: inset 0 0 0 2px var(--accent, #4a9eff);
+}
+#sidebar.collapsed #session-list li.session-busy .session-abbr {
+  box-shadow: inset 0 0 0 2px #f0b429;
+}
+
+/* Settings footer: centre the gear, drop the label. */
+#sidebar.collapsed #sidebar-footer { padding: 8px 4px; }
+#sidebar.collapsed #settings-btn { justify-content: center; padding: 0.4rem 0; gap: 0; }
+
+#sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+}
+.sidebar-header-btns {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.app-name {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-strong);
+}
+
+#sidebar-toggle {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+#sidebar-toggle:hover { background: var(--bg-raised); color: var(--text); }
+
+/* ─── New Chat split-button (pill) ─────────────────────────────────────
+ * The pill sits below the sidebar header. When the agent exposes more
+ * than one squad, a trailing chevron splits the pill and opens a menu
+ * to pick which squad the next session uses. */
+#new-chat-wrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  margin: 10px 12px 4px;
+  border-radius: 10px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  box-shadow: 0 0 0 1px var(--accent-border-soft), 0 0 12px var(--accent-bg-soft);
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+#new-chat-wrap:hover {
+  border-color: var(--accent-border-soft);
+  box-shadow: 0 0 0 1px var(--accent-border-soft), 0 0 16px var(--accent-bg-soft);
+}
+
+#new-chat {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 14px;
+  background: transparent;
+  border: none;
+  color: var(--text-strong);
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  /* Match the wrap radius so the button fills the pill cleanly. The
+   * trailing chevron narrows it on the right when squad selection is
+   * available (see :has() rule below). */
+  border-radius: 10px;
+}
+#new-chat:hover { background: var(--bg-raised-hover); }
+#new-chat-wrap:has(#squad-toggle:not([hidden])) #new-chat {
+  border-radius: 10px 0 0 10px;
+}
+#new-chat .new-chat-text {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.15;
+  min-width: 0;
+}
+#new-chat .new-chat-label,
+#new-chat .new-chat-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+#new-chat .new-chat-sub {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-muted);
+  text-transform: lowercase;
+  letter-spacing: .04em;
+  margin-top: 1px;
+}
+#new-chat .new-chat-sub[hidden] { display: none; }
+
+#squad-toggle {
+  width: 36px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--border);
+  border-radius: 0 10px 10px 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+#squad-toggle:hover { background: var(--bg-raised-hover); color: var(--text); }
+#squad-toggle[aria-expanded="true"] {
+  background: var(--bg-active);
+  color: var(--text);
+}
+#squad-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+#squad-toggle svg { transition: transform 0.15s; }
+
+#squad-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 160px;
+  max-width: calc(100% - 24px);
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+#squad-menu[hidden] { display: none; }
+
+.squad-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.squad-menu-item:hover { background: var(--bg-raised); }
+.squad-menu-item svg {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.squad-menu-item.selected {
+  background: var(--accent-bg-soft);
+  border-color: var(--accent-border-soft);
+  color: var(--text-strong);
+}
+.squad-menu-item.selected svg { color: var(--accent-strong); }
+.squad-menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-squad-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: var(--bg-raised);
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  text-transform: lowercase;
+  letter-spacing: .02em;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#session-list li.active .session-squad-badge {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+#session-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  flex: 1;
+  /* Let the list shrink below its content height inside the flex column so
+     its own overflow-y scrollbar engages instead of growing and being
+     clipped by the sidebar's overflow:hidden. */
+  min-height: 0;
+}
+#session-list li {
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-bottom: 1px;
+  transition: background 0.1s, color 0.1s;
+}
+#session-list li:hover { background: var(--bg-raised); color: var(--text); }
+/* Open in some (non-focused) pane: a subtle highlight. */
+#session-list li.active { background: var(--bg-raised); color: var(--text); }
+/* The chat in the focused pane — the one the user is working in — stands out
+ * with the active background, brighter text, and an accent rail on the left. */
+#session-list li.active-focused {
+  background: var(--bg-active);
+  color: var(--text-strong);
+  box-shadow: inset 3px 0 0 var(--accent, #4a9eff);
+}
+.session-name-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.session-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.session-busy-dot {
+  display: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #d4a017;
+  border: 1px solid #f0b429;
+  flex-shrink: 0;
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+#session-list li.session-busy .session-busy-dot { display: block; }
+.session-bottom-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 2px;
+  gap: 4px;
+}
+#session-list li .meta {
+  font-size: 12px;
+  color: var(--text-faint);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+#session-list li:hover .session-actions,
+#session-list li.active .session-actions { opacity: 1; }
+.session-action-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  background: none;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  color: var(--text-strong);
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  opacity: 0.8;
+  transition: opacity 0.1s, color 0.1s;
+}
+.session-action-btn:hover,
+.session-action-btn:focus { background: none; outline: none; opacity: 1; }
+.delete-btn:hover { color: #f48771; }
+.session-rename-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--accent-strong);
+  border-radius: 3px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  padding: 1px 5px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+
+/* ─── Archived sessions panel ──────────────────────────────── */
+#archived-panel {
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex-shrink: 0;
+}
+#archived-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+#archived-header:hover { background: var(--bg-raised); }
+#archived-header .sidebar-section-label { margin: 0; }
+.archived-chevron {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  transition: transform 0.12s ease;
+  position: relative;
+  top: 2.5px;
+}
+#archived-panel:not(.collapsed) .archived-chevron { transform: rotate(90deg); }
+.archived-icon {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  margin-right: -12px;
+  position: relative;
+  top: 2.5px;
+}
+.archived-count { color: var(--text-faint); font-size: 12px; margin-left: auto; }
+#archived-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 6px;
+  overflow-y: auto;
+  max-height: 32vh;
+}
+#archived-panel.collapsed #archived-list { display: none; }
+/* Archived rows reuse the active-session row look and hover behaviour. */
+#archived-list li {
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-bottom: 1px;
+  transition: background 0.1s, color 0.1s;
+}
+#archived-list li:hover { background: var(--bg-raised); color: var(--text); }
+#archived-list li.active { background: var(--bg-active); color: var(--text-strong); }
+#archived-list li .meta {
+  font-size: 12px;
+  color: var(--text-faint);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#archived-list li:hover .session-actions,
+#archived-list li.active .session-actions { opacity: 1; }
+.unarchive-btn:hover { color: var(--accent-strong); }
+
+#sidebar-footer {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  /* Never let the Settings button be clipped by the sidebar's overflow:hidden;
+     the scrollable middle sections (sessions / settings menu) yield space. */
+  flex-shrink: 0;
+}
+#set-token {
+  width: 100%;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+#set-token:hover { background: var(--bg-raised); color: var(--text); }
+
+/* ─── Sidebar resize handle ────────────────────────────────── */
+#sidebar-resize {
+  width: 4px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  transition: width 0.15s ease, background 0.15s;
+}
+#sidebar-resize:hover,
+#sidebar-resize.is-dragging { background: var(--accent-strong); }
+body.resizing #sidebar-resize { transition: none; }
+
+/* In rail mode the handle just expands on click (the toggle button in
+ * the rail is the primary control); no resize, so use a pointer. */
+#sidebar.collapsed ~ #sidebar-resize { cursor: pointer; }
+
+

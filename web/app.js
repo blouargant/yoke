@@ -3780,6 +3780,35 @@ function closeTab(panel, key) {
   refreshSidebarActive();
 }
 
+// requeueHiddenWizards pulls any ask-user wizard belonging to a now-hidden tab
+// out of the pane's shared #ask-user-slot and back into its queue (requeuing
+// every still-unanswered question), then tears the wizard down so re-selecting
+// the tab rebuilds a fresh one from the queue. `activeId` is the session that
+// stays visible; pass null for draft/editor/terminal tabs (they own no session,
+// so every wizard in the slot is hidden) — otherwise a leftover card covers the
+// new tab's picker/composer.
+function requeueHiddenWizards(panel, activeId) {
+  const slot = panel.els.askSlot;
+  if (!slot) return;
+  for (const row of [...slot.children]) {
+    const sid = row.getAttribute("data-session-id");
+    if (!sid || sid === activeId) continue;
+    if (!row._askWizard) continue;
+    const wiz = row._askWizard;
+    const list = queuedAskWidgets.get(sid) || [];
+    for (const step of wiz.steps) {
+      if (step.resolved) continue;
+      const qs = step.type === "group" ? step.questions : [step.q];
+      for (const q of qs) {
+        if (!list.some(x => x.question_id === q.question_id)) list.push(q);
+      }
+    }
+    queuedAskWidgets.set(sid, list);
+    askWizards.delete(sid);
+    row.remove();
+  }
+}
+
 // activateTab makes `key` the visible tab of `panel` (key must already be in
 // panel.tabs). A draft key shows the start picker with no session; a session key
 // mounts its transcript, loads history if needed, subscribes to push events, and
@@ -3819,10 +3848,13 @@ async function activateTab(panel, key) {
   panel.root.classList.remove("editing");
   panel.root.classList.remove("terminal");
 
-  // Draft tab — show the picker, no session is active.
+  // Draft tab — show the picker, no session is active. The shared ask-user slot
+  // is still visible here (unlike editor/terminal tabs, which CSS hides), so
+  // requeue any prior session's wizard or its card would cover the picker.
   if (isDraft(key)) {
     panel.activeTab = key;
     panel.sessionId = null;
+    requeueHiddenWizards(panel, null);
     mountInPanel(panel, null);
     clearPinnedPrompt(panel);
     setFocusedPanel(panel.id);
@@ -3860,29 +3892,7 @@ async function activateTab(panel, key) {
   // The ask-user slot is shared by the pane's tabs. Pull any widget belonging
   // to a now-hidden tab out of the slot and back into its queue, so it reappears
   // when that tab is reselected — then flush the active tab's queued widgets.
-  const slot = panel.els.askSlot;
-  if (slot) {
-    for (const row of [...slot.children]) {
-      const sid = row.getAttribute("data-session-id");
-      if (!sid || sid === id) continue;
-      if (row._askWizard) {
-        // A wizard requeues every still-unanswered question, then is torn down
-        // so re-selecting the tab rebuilds a fresh wizard from the queue.
-        const wiz = row._askWizard;
-        const list = queuedAskWidgets.get(sid) || [];
-        for (const step of wiz.steps) {
-          if (step.resolved) continue;
-          const qs = step.type === "group" ? step.questions : [step.q];
-          for (const q of qs) {
-            if (!list.some(x => x.question_id === q.question_id)) list.push(q);
-          }
-        }
-        queuedAskWidgets.set(sid, list);
-        askWizards.delete(sid);
-        row.remove();
-      }
-    }
-  }
+  requeueHiddenWizards(panel, id);
   const queued = queuedAskWidgets.get(id);
   if (queued) { queuedAskWidgets.delete(id); for (const q of queued) renderAskUserWidget(id, q); }
 

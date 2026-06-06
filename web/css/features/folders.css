@@ -1,0 +1,196 @@
+/* Folders browser panel + folder context menu
+   Part of web/css/styles.css — edit this partial, not the @import barrel. */
+
+/* ─── Folders browser panel ────────────────────────────────── */
+#folders-panel {
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex-shrink: 0;
+}
+/* Grab strip over the top border to resize the panel height (ns-resize).
+   Sits flush with the border via the negative margin so the visible line
+   itself is grabbable. Hidden when collapsed (nothing to resize). */
+#folders-resize {
+  height: 6px;
+  margin-top: -4px;
+  margin-bottom: -2px;
+  flex-shrink: 0;
+  cursor: ns-resize;
+}
+#folders-resize:hover { background: var(--accent, var(--border)); opacity: 0.4; }
+#folders-panel.collapsed #folders-resize { display: none; }
+/* Drag-and-drop / paste upload target highlight. */
+#folders-panel.drag-over {
+  outline: 2px dashed var(--accent-strong);
+  outline-offset: -2px;
+  background: rgba(0, 122, 204, 0.10);
+}
+#folders-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+#folders-header:hover { background: var(--bg-raised); }
+#folders-header .sidebar-section-label { margin: 0; }
+.folders-chevron {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  transition: transform 0.12s ease;
+  position: relative;
+  top: 2.5px;
+}
+#folders-panel:not(.collapsed) .folders-chevron { transform: rotate(90deg); }
+.folders-icon {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  margin-right: -12px;
+  position: relative;
+  top: 2.5px;
+}
+#folders-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+#folders-panel.collapsed #folders-body { display: none; }
+#folders-path {
+  font-size: 11px;
+  color: var(--text-faint);
+  padding: 2px 12px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;        /* keep the tail (deepest dir) visible when truncated */
+  text-align: left;
+}
+#folders-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 6px;
+  overflow-y: auto;
+  max-height: 32vh;
+}
+#folders-list ul.folder-children {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 14px; /* indent each nesting level */
+}
+/* The clickable row: a div inside each entry <li> (and the lone ".." <li>). */
+#folders-list .folder-entry-row,
+#folders-list li.folder-up {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-bottom: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: background 0.1s, color 0.1s;
+  user-select: none;
+}
+#folders-list .folder-entry-row:hover,
+#folders-list li.folder-up:hover { background: var(--bg-raised); color: var(--text); }
+#folders-list .folder-entry-icon { flex-shrink: 0; color: var(--text-faint); }
+#folders-list .folder-entry-row:hover .folder-entry-icon,
+#folders-list li.folder-up:hover .folder-entry-icon { color: var(--text); }
+#folders-list .folder-entry-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#folders-list .folder-chevron,
+#folders-list .folder-chevron-spacer {
+  flex-shrink: 0;
+  width: 10px;
+  font-size: 9px;
+  line-height: 1;
+  text-align: center;
+  color: var(--text-faint);
+}
+#folders-list .folder-entry-row:focus { outline: none; }
+#folders-list .folder-entry-row:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent-border-soft);
+}
+/* Persistent marker on the entry whose "@ref" is currently armed for pasting. */
+#folders-list .folder-entry-row.copied,
+#folders-list .folder-entry-row.copied:hover {
+  background: var(--accent-bg-soft);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent-strong);
+}
+#folders-list .folder-entry-row.copied .folder-entry-icon { color: var(--accent-strong); }
+/* One-shot pulse layered on top at the moment of copy. */
+#folders-list .folder-entry-row.flash { animation: folder-copy-flash 0.6s ease-out; }
+@keyframes folder-copy-flash {
+  0%   { background: var(--accent-strong); color: #fff; }
+  100% { background: var(--accent-bg-soft); }
+}
+#folders-list li.folder-up { color: var(--text-faint); }
+#folders-list li.folder-file > .folder-entry-row { cursor: default; }
+#folders-list li.folder-loading {
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+#folders-empty {
+  padding: 4px 12px 8px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* Folders panel right-click context menu (body-appended, fixed so it escapes
+ * the sidebar/panel overflow clipping). */
+#folder-ctx-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 150px;
+  padding: 4px;
+  background: var(--bg-raised, #2a2d2e);
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+/* The id selector above outranks the UA `[hidden]{display:none}` rule, so this
+ * explicit rule is required for `m.hidden = true` to actually hide the menu. */
+#folder-ctx-menu[hidden] { display: none; }
+.folder-ctx-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text, #eee);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.folder-ctx-item:hover { background: var(--accent, #0e639c); color: #fff; }
+/* Greyed-out item: an action that doesn't apply to this entry (e.g. rename/delete
+   on the ".." parent row). Shown for context but inert. */
+.folder-ctx-item:disabled {
+  color: var(--text-faint, #777);
+  cursor: default;
+  opacity: 0.5;
+}
+.folder-ctx-item:disabled:hover { background: transparent; color: var(--text-faint, #777); }
+/* Group separator between kinds of context-menu actions. */
+.folder-ctx-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border, #333);
+}
+
+
