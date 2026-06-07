@@ -17,11 +17,13 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/blouargant/yoke/internal/askuser"
+	"github.com/blouargant/yoke/internal/deps"
 )
 
 // inputRefRe matches "${input:id}" anywhere in a string. The id is
@@ -319,6 +321,10 @@ func newLazyTransport(s Server, inputs []Input, r *InputResolver) *lazyTransport
 // the user for a credential they already declined.
 func (l *lazyTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 	l.once.Do(func() {
+		if err := ensureServerDeps(ctx, l.resolver, l.server); err != nil {
+			l.err = err
+			return
+		}
 		resolved, err := resolveServerTemplates(ctx, l.resolver, l.server, l.inputs)
 		if err != nil {
 			l.err = err
@@ -330,4 +336,32 @@ func (l *lazyTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 		return nil, l.err
 	}
 	return l.real.Connect(ctx)
+}
+
+// ensureServerDeps enforces a server's declared `requires:` before its first
+// connect: each missing binary is installed with user consent (via the askuser
+// registry the resolver already carries) through the Bash safety floor, then
+// rechecked. A dependency that stays unavailable returns an error — which the
+// caller stores as the lazyTransport's sticky error, so the MCP server reports
+// as unreachable (the model can fall back) instead of the host degrading
+// silently. Servers with no `requires` are a no-op.
+func ensureServerDeps(ctx context.Context, r *InputResolver, s Server) error {
+	if len(s.Requires) == 0 {
+		return nil
+	}
+	var reg *askuser.Registry
+	if r != nil {
+		reg = r.reg
+	}
+	outcomes := deps.Ensure(ctx, sessionIDFromContext(ctx), s.Requires, deps.NewAskuserConfirmer(reg), deps.BashInstaller)
+	var unmet []string
+	for _, o := range outcomes {
+		if !o.Available {
+			unmet = append(unmet, fmt.Sprintf("%s (%s)", o.Requirement.Command, o.Reason))
+		}
+	}
+	if len(unmet) > 0 {
+		return fmt.Errorf("mcp server %q unavailable — missing dependencies: %s", s.Name, strings.Join(unmet, "; "))
+	}
+	return nil
 }

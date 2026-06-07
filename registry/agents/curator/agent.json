@@ -1,6 +1,6 @@
 {
   "allow_file_attachments": false,
-  "builtin": false,
+  "builtin": true,
   "description": "Post-session soft-skill curator.",
   "enabled": true,
   "leader": false,

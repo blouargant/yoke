@@ -34,6 +34,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/mcptoolset"
+
+	"github.com/blouargant/yoke/internal/deps"
 )
 
 // Transport kind constants for Server.Type.
@@ -59,6 +61,12 @@ type Server struct {
 	Env     map[string]string `json:"env,omitempty"`
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+	// Requires declares runtime dependencies (a binary that must be on PATH
+	// plus how to install it). They are checked — and installed with user
+	// consent — at first connect (where a session context exists), the same
+	// lazy point as "${input:id}" resolution. A dependency that stays
+	// unavailable makes the server fail to connect rather than degrade silently.
+	Requires []deps.Requirement `json:"requires,omitempty"`
 }
 
 // TransportKind returns the normalised transport kind for s, defaulting

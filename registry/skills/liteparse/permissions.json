@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(lit parse *)",
+      "Bash(lit batch-parse *)",
+      "Bash(lit screenshot *)",
+      "Bash(lit --version)"
+    ]
+  }
+}

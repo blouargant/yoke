@@ -1,6 +1,6 @@
 {
   "allow_file_attachments": true,
-  "builtin": false,
+  "builtin": true,
   "description": "Reviews a diff or set of changes read-only: flags correctness bugs, security smells, and reuse/simplification opportunities, with severity and exact file:line references. Does not modify code.",
   "enabled": true,
   "leader": false,

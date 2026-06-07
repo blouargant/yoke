@@ -74,6 +74,12 @@ func Toolset(ctx context.Context, skillNames []string) (tool.Toolset, error) {
 	if err != nil {
 		return nil, err
 	}
+	// When a process-wide dependency gate is installed, decorate load_skill so a
+	// loaded skill's declared `requires:` are checked/installed before the model
+	// proceeds. With no gate this is the byte-identical original behaviour.
+	if g := depGate(); g != nil {
+		return &gatedSkillToolset{SkillToolset: ts, gate: g}, nil
+	}
 	return ts, nil
 }
 

@@ -2684,10 +2684,14 @@ const BASE_PATH = window.BASE_PATH || "";
     if (!state.activeAgentInitialized) {
       state.activeAgentInitialized = true;
       const savedName = localStorage.getItem(ACTIVE_AGENT_KEY);
-      if (savedName) {
-        const idx = d.agents.findIndex(a => a.name === savedName);
-        if (idx >= 0) state.activeAgentIdx = idx;
+      let idx = savedName ? d.agents.findIndex(a => a.name === savedName) : -1;
+      // No valid prior selection: default to the leader if one exists,
+      // otherwise the first agent in the list.
+      if (idx < 0) {
+        const isLeader = a => !!a.leader || (a.name || "").toLowerCase() === "leader";
+        idx = d.agents.findIndex(isLeader);
       }
+      state.activeAgentIdx = idx >= 0 ? idx : 0;
     }
 
     if (state.activeAgentIdx >= d.agents.length) state.activeAgentIdx = d.agents.length - 1;
@@ -2699,12 +2703,15 @@ const BASE_PATH = window.BASE_PATH || "";
     // Fleet list
     fleetList.innerHTML = "";
 
-    // Separate agents into built-in and custom
-    // Check the builtin flag from API, or fall back to known built-in agent names
-    const BUILTIN_AGENT_NAMES = new Set(["leader", "skill_editor", "helper", "summariser", "curator"]);
-    const isBuiltinByName = (a) => a.builtin === true || BUILTIN_AGENT_NAMES.has(a.name);
-    const builtinAgents = d.agents.filter(isBuiltinByName);
-    const customAgents = d.agents.filter(a => !isBuiltinByName(a));
+    // Separate agents into built-in and custom strictly by the on-disk
+    // `builtin` flag — the source of truth. (The read-only / undeletable
+    // treatment is a separate axis driven by isBuiltinAgent(): agents wired
+    // into the binary. So a shipped-but-customizable agent can sit in the
+    // built-in group yet stay editable.)
+    const isBuiltinFlag = (a) => a.builtin === true;
+    const byName = (x, y) => (x.name || "").localeCompare(y.name || "", undefined, { sensitivity: "base" });
+    const builtinAgents = d.agents.filter(isBuiltinFlag).sort(byName);
+    const customAgents = d.agents.filter(a => !isBuiltinFlag(a)).sort(byName);
 
     const renderAgentGroup = (agents, label) => {
       if (agents.length === 0) return;
@@ -2743,9 +2750,9 @@ const BASE_PATH = window.BASE_PATH || "";
       });
     };
 
-    // Render built-in agents first, then custom
+    // Render custom agents first (labelled simply "AGENTS"), then built-in
+    renderAgentGroup(customAgents, "AGENTS");
     renderAgentGroup(builtinAgents, "BUILT-IN AGENTS");
-    renderAgentGroup(customAgents, "CUSTOM AGENTS");
 
     // Detail panel
     const modelsCatalog = state.parsed.models?.value?.models;

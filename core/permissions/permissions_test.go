@@ -121,13 +121,20 @@ func TestCompoundCommandSplitting(t *testing.T) {
 func TestReadOnlyAllowlist(t *testing.T) {
 	t.Parallel()
 	cfg := cfgFromJSON(t, `{"permissions":{}}`)
-	for _, cmd := range []string{"cat foo", "grep x y", "git status", "wc -l f"} {
+	for _, cmd := range []string{"cat foo", "grep x y", "git status", "wc -l f", "command -v lit", "command -V git"} {
 		if d, _ := cfg.CheckArgs("Bash", bash(cmd), ""); d != DecisionAllow {
 			t.Errorf("read-only %q should allow, got %v", cmd, d)
 		}
 	}
 	if d, _ := cfg.CheckArgs("Bash", bash("git commit -m x"), ""); d != DecisionAsk {
 		t.Errorf("git commit is not read-only, got %v", d)
+	}
+	// `command` without a -v/-V lookup flag *executes* its argument, so it must
+	// not be auto-allowed.
+	for _, cmd := range []string{"command rm -rf x", "command ls"} {
+		if d, _ := cfg.CheckArgs("Bash", bash(cmd), ""); d != DecisionAsk {
+			t.Errorf("executing %q should ask, got %v", cmd, d)
+		}
 	}
 	// An explicit ask rule overrides the read-only allowlist.
 	cfg2 := cfgFromJSON(t, `{"permissions":{"ask":["Bash(cat *)"]}}`)

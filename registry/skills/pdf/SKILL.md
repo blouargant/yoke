@@ -1,12 +1,28 @@
 ---
 name: pdf
-description: Extract or summarise text from a local PDF file.
+description: Fallback PDF text extractor using pdftotext (poppler). Use ONLY when the preferred `liteparse` skill is unavailable or for a quick plain-text dump of a simple text PDF — for the best PDF parsing (scanned, multi-column, layout-heavy, or non-PDF formats) prefer the `liteparse` skill.
+requires:
+  - command: pdftotext
+    label: poppler (pdftotext)
+    install:
+      darwin: brew install poppler
+      linux: apt-get install -y poppler-utils
 metadata:
   author: blouargant@chapsvision.com
-  tags: "file, pdf, text extraction"
+  tags: "file, pdf, text extraction, fallback"
 ---
 
 # PDF
+
+> **This is the lightweight fallback parser.** Prefer the **`liteparse`** skill
+> (`lit`) for PDF parsing — it handles scanned and complex PDFs far better and
+> also covers DOCX/PPTX/XLSX/images.
+>
+> ⚠️ **Do not pre-empt LiteParse.** If `lit` is merely **not installed yet**, do
+> **not** use this skill — go back to the `liteparse` skill and **offer to
+> install LiteParse first**. Only use `pdftotext` here once the user has
+> **declined** the LiteParse install, the install **failed**, or the user has
+> **explicitly asked** for a quick pdftotext dump.
 
 1. Check whether `pdftotext` is available on the host.
 

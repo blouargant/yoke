@@ -16,6 +16,7 @@ import (
 	"github.com/blouargant/yoke/internal/bg"
 	mcpcfg "github.com/blouargant/yoke/internal/mcp"
 	"github.com/blouargant/yoke/internal/paths"
+	"github.com/blouargant/yoke/internal/skills"
 	"github.com/blouargant/yoke/internal/tasks"
 	"github.com/blouargant/yoke/internal/teammates"
 	"github.com/blouargant/yoke/internal/todo"
@@ -120,6 +121,12 @@ func BuildInfrastructure(ctx context.Context, opts Options) (*Infrastructure, er
 			"session_id":  q.SessionID,
 		})
 	})
+
+	// Install the process-wide skill dependency gate: when a loaded skill
+	// declares `requires:`, load_skill checks/installs the missing binaries
+	// (asking the user first) before the model proceeds. Process-wide because
+	// the ask-user registry is process-wide and survives hot-reload.
+	skills.SetDepGate(newSkillDepGate(askUserReg))
 
 	suffix := func(userID, sessionID string) string {
 		u := sanitizeID(userID)

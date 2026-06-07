@@ -204,6 +204,20 @@ func isReadOnlyCommand(sub string) bool {
 		if len(fields) >= 2 {
 			return readOnlyGitSubcommands[fields[1]]
 		}
+	case "command":
+		// `command -v NAME` / `command -V NAME` only look NAME up and never
+		// execute it, so they are read-only. Bare `command NAME args…` *runs*
+		// NAME (e.g. `command rm -rf /`), so it must not be auto-allowed. Only
+		// leading option tokens count — a `-v` after the name is an argument to
+		// NAME, not to `command`.
+		for _, f := range fields[1:] {
+			if !strings.HasPrefix(f, "-") {
+				break // reached NAME; no -v/-V option means command executes it
+			}
+			if strings.ContainsAny(f, "vV") {
+				return true
+			}
+		}
 	}
 	return false
 }

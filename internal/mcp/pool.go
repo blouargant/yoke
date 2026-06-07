@@ -143,7 +143,10 @@ func (p *Pool) Refcount(s Server) int {
 // is prompted at first tool use (when a session context exists)
 // rather than at agent build time.
 func (p *Pool) buildPooledTransport(s Server, inputs []Input) (mcp.Transport, error) {
-	if hasInputReferences(s) {
+	// A server with template references OR declared dependencies defers to the
+	// lazy transport so both credential prompts and the dependency gate fire at
+	// first tool use (when a session context exists), not at agent-build time.
+	if hasInputReferences(s) || len(s.Requires) > 0 {
 		return newLazyTransport(s, inputs, p.resolver), nil
 	}
 	return buildTransport(s)

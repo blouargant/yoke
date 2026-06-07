@@ -241,7 +241,8 @@ Resulting tags are applied to `_stats.json` via `Stats.RecordTag`.
 | `internal/bg/` | Background command queue; `bash_background` + `bg_list` tools |
 | `internal/worktree/` | Git worktree isolation tools |
 | `internal/teammates/` | Inter-agent mailbox FSM: `teammate_ask/tell/check/list`. The leader's `teammate_check` is suppressed when the host drains the inbox in the background (see "Background mailbox delivery") |
-| `internal/skills/` | Skill loader: `load_skill`, `list_skills` (reads `registry/skills/<name>/SKILL.md`) |
+| `internal/skills/` | Skill loader: `load_skill`, `list_skills` (reads `registry/skills/<name>/SKILL.md`). `load_skill` is wrapped by a process-wide dependency gate (`SetDepGate`/`RequiresFor`, [internal/skills/deps_gate.go](internal/skills/deps_gate.go)) — see "Tool dependency enforcement" |
+| `internal/deps/` | Runtime tool-dependency gate: `Requirement`/`Install` (a binary that must be on PATH + a scalar-or-per-OS install command, parsed from YAML **and** JSON), `Present`/`Missing` (PATH check via `exec.LookPath`), and `Ensure` (check → ask user → install via the Bash safety floor → recheck). `NewAskuserConfirmer` + `BashInstaller` adapters. Backs the skill `requires:` load_skill gate and the MCP `requires` connect gate |
 | `internal/shellcomplete/` | Dependency-free bash-like tab completion (`Complete(line, cwd)`): `$PATH` executables for the first token, filesystem paths otherwise. Backs the `!` shell-escape completion in TUI + web. `CompletePath(token, cwd)` is the path-only variant backing `@file` reference completion |
 | `internal/fileref/` | "@path" chat file references: `Spans`/`Tokens`/`Classify`/`Resolve`/`Context`. Parses `@`-prefixed path tokens (at line start or after whitespace, so emails are excluded), classifies them as file/dir/missing, and inlines referenced **file** contents as an extra user-turn part. Shared by the server, TUI, and CLI send paths; the grammar is mirrored in `web/app.js` |
 | `internal/agentmd/` | AGENT.md project memory (yoke's `CLAUDE.md` equivalent): `Resolve(cwd)` discovers + concatenates AGENT.md across layers (system → user → `.agents/` → project walk-up) with a per-cwd mtime cache; `InitPrompt()` is the shared `/init` bootstrap prompt; `AppendMemory(cwd, line)` backs the `#` shortcut. Injected into the leader/root system instruction per turn by the `agentmd` plugin ([agent/agentmd_plugin.go](agent/agentmd_plugin.go), registered in [agent/build_plugins.go](agent/build_plugins.go)) |
@@ -1180,6 +1181,48 @@ The web UI exposes a Squads sub-tab under Settings → Agent with a leader
 dropdown (including a `(none — run single agent directly)` option that
 switches the member picker to single-select), member checkboxes, and
 add/delete. Hot-reload picks up squad edits without a process restart.
+
+### Tool dependency enforcement (`requires`)
+
+Skills and MCP servers can declare runtime **tool dependencies** that the host
+**enforces in code** — checking the binary is on PATH, asking the user to
+install it, running the install, and re-checking — rather than relying on the
+model to follow a prompt. Backed by [internal/deps/](internal/deps/) (`Ensure`).
+
+- **Declaration.** A `requires:` list (each `{command, install, label}`); the
+  `install` value is either a single string or a per-OS map keyed by `GOOS`
+  (`{default, linux, darwin, windows}`):
+  ```yaml
+  requires:
+    - command: lit
+      label: LiteParse
+      install: pip install liteparse
+  ```
+  Skills put it in SKILL.md frontmatter ([internal/skills/](internal/skills/)
+  `RequiresFor`); MCP servers put it on the server entry in `mcp_config.json`
+  (`Server.Requires`, [internal/mcp/mcp.go](internal/mcp/mcp.go)).
+- **Skill enforcement point** = `load_skill`. A process-wide gate
+  (`skills.SetDepGate`, installed from the ask-user registry in
+  [agent/infrastructure.go](agent/infrastructure.go) via `newSkillDepGate`,
+  [agent/skill_deps_gate.go](agent/skill_deps_gate.go)) decorates the
+  `load_skill` tool ([internal/skills/deps_gate.go](internal/skills/deps_gate.go)
+  `gatedLoadTool`, mirroring softskills' `renamedTool` — it must pack **itself**
+  in `ProcessRequest` or dispatch bypasses the gate). When a loaded skill's
+  declared binary is missing it asks the user (`ask_user`), installs via the
+  **Bash safety floor**, and rechecks. `skills.Toolset`'s signature is
+  unchanged; with no gate set (CLI/TUI examples) behaviour is byte-identical.
+- **MCP enforcement point** = first connect. The pool routes any server with
+  `requires` (or `${input:id}` refs) through the **lazy transport**
+  ([internal/mcp/inputs.go](internal/mcp/inputs.go) `lazyTransport.Connect` →
+  `ensureServerDeps`), so the dependency gate fires at first tool use — where a
+  session context exists to prompt — not at agent-build/boot time.
+- **On decline / install failure** the behaviour is *report unavailable,
+  fallback* (not hard-block): the skill gate attaches a `dependency_status`
+  notice to the `load_skill` result so the model uses the skill's documented
+  fallback; the MCP gate returns a sticky `Connect` error so the server reports
+  as unreachable. Enforcement guarantees *"no silent skip of the install once a
+  dependency-bearing skill/server is engaged"* — it does **not** override the
+  model's choice of which skill to use in the first place (that stays prompt-led).
 
 ### Adding a skill
 

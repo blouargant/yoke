@@ -1,6 +1,6 @@
 {
   "allow_file_attachments": false,
-  "builtin": false,
+  "builtin": true,
   "description": "Authors and edits Agent Skills (SKILL.md files under $HOME/.yoke/skills) following the agentskills.io specification. Use when the user asks to create, scaffold, refine, or update a skill, or to look up an existing public skill to adopt.",
   "enabled": true,
   "leader": true,

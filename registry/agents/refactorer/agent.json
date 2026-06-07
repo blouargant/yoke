@@ -1,6 +1,6 @@
 {
   "allow_file_attachments": true,
-  "builtin": false,
+  "builtin": true,
   "description": "Performs behaviour-preserving structural changes across the codebase: renames, extractions, dead-code removal, mechanical migrations. Works in a worktree and verifies the build still passes.",
   "enabled": true,
   "leader": false,
