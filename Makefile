@@ -160,6 +160,16 @@ package-check: ## Validate .goreleaser.yaml without building (brews deprecation 
 	@# Eyeball the output for any OTHER, real config error.
 	@$(GORELEASER) check || echo ">> package-check: non-zero exit — confirm the only issue is the accepted 'brews' deprecation (no other errors above)."
 
+PYTHON ?= python3
+# Empty by default → build_wheels.py builds every supported platform wheel.
+# Override to restrict, e.g. `make wheels WHEEL_PLATFORMS="linux/amd64"`.
+WHEEL_PLATFORMS ?=
+
+.PHONY: wheels
+wheels: ## Build per-platform pip wheels (yoke-agent) into dist/wheels (override WHEEL_PLATFORMS="linux/amd64 ...")
+	VERSION='$(VERSION)' COMMIT='$(COMMIT)' $(PYTHON) scripts/build_wheels.py $(WHEEL_PLATFORMS)
+	@echo ">> wheel artifacts:"; ls -1 $(DIST_DIR)/wheels 2>/dev/null | grep '\.whl$$' || true
+
 .PHONY: checksums
 checksums: ## Generate SHA256 checksums for release artifacts
 	@cd $(DIST_DIR) && shasum -a 256 *.tar.gz *.zip 2>/dev/null > SHA256SUMS && cat SHA256SUMS

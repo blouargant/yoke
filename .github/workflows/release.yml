@@ -139,6 +139,47 @@ jobs:
             echo "Artifacts published to the GitHub Release page."
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # Build the per-platform pip wheels (yoke-agent) and publish to PyPI. The Go
+  # binaries are static (CGO_ENABLED=0), so all platform wheels cross-compile on
+  # one Linux runner — no per-OS matrix. rc/beta tags publish as PEP 440
+  # pre-releases (pip ignores them by default), matching goreleaser's
+  # `prerelease: auto`. Requires a PYPI_API_TOKEN repo secret.
+  pypi:
+    name: Build & publish pip wheels (PyPI)
+    needs: [validate, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade build wheel setuptools twine
+
+      - name: Build wheels
+        run: make wheels VERSION="${GITHUB_REF_NAME}"
+
+      - name: Check wheel metadata
+        run: twine check dist/wheels/*.whl
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: twine upload --non-interactive --skip-existing dist/wheels/*.whl
+
   # Build the Windows MSI from the Windows .zip goreleaser just published, then
   # attach it to the same GitHub Release. goreleaser OSS can't build MSI, and
   # WiX needs a Windows host — so this runs on windows-latest after `release`.

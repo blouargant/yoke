@@ -40,6 +40,36 @@ the refreshed `web/monaco` or `web/xterm` files together with the Makefile bump.
 Lazy-loading is unaffected (`ensureMonaco` / `ensureXterm` resolve paths at
 runtime), so only the vendored files + the pinned version change.
 
+## Distribution / packaging
+
+yoke ships through several channels, all driven by `.goreleaser.yaml` +
+`.github/workflows/release.yml` and the assets under `packaging/`:
+goreleaser raw binaries (`make release`), `.deb`/`.rpm` (nfpms → `/etc/yoke`),
+a Homebrew formula (`brews:` → `$(brew --prefix)/share/yoke`), a Windows MSI
+([packaging/windows/yoke.wxs](packaging/windows/yoke.wxs) → `C:\ProgramData\Yoke`),
+and **pip wheels** (`make wheels`). All non-FHS wrappers rely on yoke embedding
+**no** defaults — they bundle the config/registry/web tree and point the binaries
+at it via `YOKE_SYSTEM_CONFIG_DIR` + `YOKE_WEB_DIR` (see the env-var table).
+
+**pip — `yoke-agent`** ([packaging/pip/](packaging/pip/), built by
+[scripts/build_wheels.py](scripts/build_wheels.py)): per-platform binary wheels
+(`py3-none-<plat>`) that bundle the two static Go binaries + a `sysconf/`
+(config JSONs + `filters/` + `registry/`) + `web/` as package data. Because the
+binaries are `CGO_ENABLED=0` static builds, **all six platform wheels
+cross-compile on one Linux host** (no per-OS CI matrix); platform tags are
+`manylinux2014_{x86_64,aarch64}`, `macosx_{10_13_x86_64,11_0_arm64}`,
+`win_{amd64,arm64}`. The console scripts stay `yoke` / `yoke-server`; the
+distribution name is `yoke-agent`. The thin Python launcher
+([packaging/pip/src/yoke/launcher.py](packaging/pip/src/yoke/launcher.py)) sets
+`YOKE_WEB_DIR`/`YOKE_SYSTEM_CONFIG_DIR` to the bundled tree **only when unset**,
+**seeds `~/.yoke`** (config + registry, never overwriting existing files —
+[seed.py](packaging/pip/src/yoke/seed.py), also the `yoke-seed --force` command),
+then `exec`s the real binary. The build version is normalised to PEP 440
+(`v1.2.3-rc1` → `1.2.3rc1`). CI publishes via the `pypi` job (`twine upload`,
+needs a `PYPI_API_TOKEN` secret); rc/beta tags become PEP 440 pre-releases.
+This needed **no Go changes** — seeding into `~/.yoke` reuses the existing
+per-user config layer (`paths.Home()`).
+
 ## Commands
 
 ```bash
@@ -51,6 +81,7 @@ make examples          # opt-in: build all examples under bin/
 make release            # cross-platform raw binaries → dist/
 make package            # cross-platform + .deb + .rpm + .zip → dist/ (requires goreleaser)
 make package-check      # validate .goreleaser.yaml without building
+make wheels             # per-platform pip wheels (yoke-agent) → dist/wheels/ (override WHEEL_PLATFORMS=)
 
 # Test
 make test               # all unit tests
@@ -573,7 +604,7 @@ Two roots, resolved by [internal/paths/paths.go](internal/paths/paths.go):
 | `YOKE_SERVER_GC_INTERVAL` | Period between sweeps that remove orphan files in `$YOKE_HOME/logs` and `$YOKE_HOME/logs/uploads` (default `1h`; `0` disables) |
 | `YOKE_HOME` | Per-user state root for all mutable files (default `$HOME/.yoke`) |
 | `YOKE_CONFIG_DIRS` | Colon-separated config search chain, high→low precedence. Replaces the default `.agents:$YOKE_HOME:/etc/yoke` |
-| `YOKE_SYSTEM_CONFIG_DIR` | Overrides **only** the system layer (`paths.SystemConfigDir`, default `/etc/yoke`), leaving `.agents` and `$HOME/.yoke` in the chain — unlike `YOKE_CONFIG_DIRS` which replaces the whole chain. Used by non-FHS package wrappers (Homebrew formula → `$(brew --prefix)/share/yoke`; Windows MSI → `C:\ProgramData\Yoke`) to relocate bundled config/registry without a rebuild |
+| `YOKE_SYSTEM_CONFIG_DIR` | Overrides **only** the system layer (`paths.SystemConfigDir`, default `/etc/yoke`), leaving `.agents` and `$HOME/.yoke` in the chain — unlike `YOKE_CONFIG_DIRS` which replaces the whole chain. Used by non-FHS package wrappers (Homebrew formula → `$(brew --prefix)/share/yoke`; Windows MSI → `C:\ProgramData\Yoke`; pip wheel launcher → the bundled `_dist/sysconf`) to relocate bundled config/registry without a rebuild |
 | `YOKE_CONFIG_PATH` | Explicit `agents.json` path; bypasses the chain |
 | `YOKE_SKILLS_REGISTRY_DIR` | Where the web UI installs imported skills (default `$YOKE_HOME/registry/skills`) |
 | `YOKE_AGENTS_REGISTRY_DIR` | Where the web UI installs imported agents (default `$YOKE_HOME/registry/agents`) |

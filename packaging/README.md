@@ -140,10 +140,80 @@ upgrade — same model as the Homebrew `share/yoke` tree above.
 > - **Code signing**: the MSI is unsigned, so SmartScreen will warn. An
 >   Authenticode certificate + `signtool` removes the warning (not wired up).
 
+## pip — PyPI wheels
+
+A per-user, no-root install for anyone with Python 3.8+:
+
+```
+pip install yoke-agent        # or: pipx install yoke-agent
+```
+
+The PyPI distribution is **`yoke-agent`**; the console commands stay `yoke`
+(CLI/TUI/REPL) and `yoke-server` (HTTP API + Web UI). Unlike the `.deb`/`.rpm`
+(config in `/etc/yoke`, needs root), the pip install is per-user: the bundled
+**config + registry are seeded into `~/.yoke`** on first run, so the files are
+the user's to edit (and survive upgrades — existing files are never overwritten).
+
+The packaging lives under [pip/](pip/):
+
+```
+pip/
+├── pyproject.toml            # name=yoke-agent, console scripts, metadata
+├── setup.py                  # forces a py3-none-<platform> binary wheel
+├── README.md                 # PyPI long description
+└── src/yoke/
+    ├── __init__.py           # _dist/ path resolvers
+    ├── launcher.py           # `yoke` / `yoke-server` entry points
+    ├── seed.py               # `yoke-seed`: ~/.yoke materialisation
+    └── _dist/                # staged at build time (git-ignored)
+        ├── bin/{yoke,yoke-server}[.exe]
+        ├── sysconf/          # config JSONs + filters/ + registry/  → seeds ~/.yoke
+        └── web/              # static Web UI → YOKE_WEB_DIR
+```
+
+How it works (no Go changes needed — it reuses the existing config search chain):
+
+- The wheel bundles the **prebuilt Go binaries** plus the default
+  config/registry/web tree as package data. Because the binaries are
+  `CGO_ENABLED=0` static builds, **all six platform wheels cross-compile on a
+  single Linux host** — there is no per-OS CI matrix.
+- The Python launcher ([pip/src/yoke/launcher.py](pip/src/yoke/launcher.py))
+  sets `YOKE_WEB_DIR` (bundled `web/`) and `YOKE_SYSTEM_CONFIG_DIR` (bundled
+  `sysconf/`) **only when unset** (user overrides win), seeds `~/.yoke`
+  ([pip/src/yoke/seed.py](pip/src/yoke/seed.py)), then `exec`s the real binary.
+- `yoke-seed --force` re-copies the pristine bundled defaults into `~/.yoke`
+  (or `--home <dir>`); seeding is automatic on first launch.
+
+Platform wheels built (PEP 425 tags):
+
+| Go target | wheel platform tag |
+|---|---|
+| linux/amd64 | `manylinux2014_x86_64` |
+| linux/arm64 | `manylinux2014_aarch64` |
+| darwin/amd64 | `macosx_10_13_x86_64` |
+| darwin/arm64 | `macosx_11_0_arm64` |
+| windows/amd64 | `win_amd64` |
+| windows/arm64 | `win_arm64` |
+
+Build locally:
+
+```
+make wheels                                  # all six wheels → dist/wheels/
+make wheels WHEEL_PLATFORMS="linux/amd64"    # just one
+```
+
+[scripts/build_wheels.py](../scripts/build_wheels.py) does the staging +
+cross-compile + `bdist_wheel` per platform and normalises the version to PEP 440
+(`v1.2.3` → `1.2.3`, `v1.2.3-rc1` → `1.2.3rc1`). CI publishes them in the `pypi`
+job of `.github/workflows/release.yml` via `twine upload` — requires a
+**`PYPI_API_TOKEN`** repo secret. rc/beta tags publish as PEP 440 pre-releases
+(pip ignores them by default), mirroring goreleaser's `prerelease: auto`.
+
 ## Building the packages
 
 ```
 make package          # cross-compile + .deb + .rpm + .zip + brew formula into dist/
+make wheels           # cross-compile + per-platform pip wheels into dist/wheels/
 ```
 
 See the top-level `Makefile` and `.goreleaser.yaml` for the full pipeline.

@@ -91,9 +91,23 @@ https://github.com/user-attachments/assets/a04c81d9-2c93-4ef6-9d82-98dc26f1f726
 
 ### 1. Install
 
-Download the package for your platform from the [Releases](https://github.com/blouargant/yoke/releases) page and install it:
+**pip (any OS, no root)** — the quickest path if you have Python 3.8+:
 
 ```bash
+pip install yoke-agent          # or: pipx install yoke-agent
+```
+
+This installs the `yoke` and `yoke-server` commands and, on first run, seeds the
+default config + registry into `~/.yoke` (yours to edit). Prebuilt wheels cover
+Linux (x86_64/aarch64), macOS (Intel/Apple Silicon), and Windows (x64/arm64).
+
+**OS packages** — download the package for your platform from the
+[Releases](https://github.com/blouargant/yoke/releases) page and install it:
+
+```bash
+# macOS (Homebrew)
+brew install blouargant/tap/yoke
+
 # Debian / Ubuntu
 sudo dpkg -i yoke_*_linux_amd64.deb
 
@@ -104,14 +118,15 @@ sudo rpm -i yoke_*_linux_amd64.rpm
 tar xzf yoke_*_linux_amd64.tar.gz -C /usr/local/bin yoke yoke-server
 ```
 
-The package installs two binaries:
+Either way you get two binaries:
 - **`yoke-server`** — HTTP API + web chat UI
 - **`yoke`** — CLI / REPL / TUI
 
 ### 2. Configure your LLM provider
 
-Edit `/etc/yoke/agents.json` (or set environment variables) to point at
-your provider. The fastest path is a couple of env vars:
+Edit `~/.yoke/agents.json` (pip / Homebrew) or `/etc/yoke/agents.json`
+(`.deb`/`.rpm`), or set environment variables to point at your provider. The
+fastest path is a couple of env vars:
 
 ```bash
 export YOKE_PROVIDER=anthropic          # or gemini, openai, openai_compat

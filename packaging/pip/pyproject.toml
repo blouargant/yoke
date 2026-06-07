@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yoke-agent"
+description = "Yoke — a multi-agent harness: CLI/TUI (yoke) + HTTP API & Web UI server (yoke-server)."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+authors = [{ name = "Bertrand Louargant", email = "blouargant@chapsvision.fr" }]
+keywords = ["agent", "llm", "ai", "cli", "tui", "mcp", "a2a", "harness"]
+# Version is injected at build time from the YOKE_WHEEL_VERSION environment
+# variable (see setup.py); the wheel itself carries no Python dependencies —
+# it ships the prebuilt Go binaries + bundled config/registry/web as data.
+dynamic = ["version"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Environment :: Web Environment",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS :: MacOS X",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Go",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development",
+  "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/blouargant/yoke"
+Repository = "https://github.com/blouargant/yoke"
+Issues = "https://github.com/blouargant/yoke/issues"
+
+# Console commands stay `yoke` / `yoke-server` even though the PyPI
+# distribution is `yoke-agent`. `yoke-seed` re-materialises the bundled
+# defaults into ~/.yoke (the launcher seeds them automatically on first run).
+[project.scripts]
+yoke = "yoke.launcher:main_yoke"
+yoke-server = "yoke.launcher:main_server"
+yoke-seed = "yoke.seed:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+packages = ["yoke"]
+# package_data (the bundled _dist/ tree: binaries + config + registry + web)
+# is computed by walking the staged directory in setup.py, so it works across
+# setuptools versions regardless of recursive-glob support.
+include-package-data = false

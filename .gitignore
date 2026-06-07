@@ -42,3 +42,9 @@ test.txt
 tmp/
 packaging/etc-yoke/filters
 packaging/etc-yoke/*.json
+
+# pip packaging build artifacts (staged binaries/assets + setuptools output)
+packaging/pip/src/yoke/_dist/
+packaging/pip/build/
+packaging/pip/**/*.egg-info/
+dist/wheels/
