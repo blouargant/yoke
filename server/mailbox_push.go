@@ -46,23 +46,33 @@ func (g *sessionRunGuard) tryAcquire(sessionID string) (release func(), ok bool)
 	}
 }
 
+// pushMsg is one multiplexed /api/events payload: a named event plus the
+// session id it concerns. "mailbox_push" signals a completed background turn;
+// "session_created"/"session_deleted"/"session_renamed" keep other open
+// browsers' sidebars in sync with session-list changes.
+type pushMsg struct {
+	Event string
+	SID   string
+}
+
 // sessionPushBroadcaster holds per-session channels that fire whenever a
 // background turn completes for that session (used by the /events SSE endpoint).
 type sessionPushBroadcaster struct {
 	mu   sync.RWMutex
 	subs map[string]map[chan struct{}]struct{}
 	// all holds multiplexed subscribers that want push notifications for every
-	// session over a single connection (each receives the notifying session id).
-	// This lets one client hold ONE SSE connection for all its open sessions
-	// instead of one per session — which would otherwise exhaust the browser's
-	// ~6-per-host HTTP/1.1 connection limit and stall further requests.
-	all map[chan string]struct{}
+	// session over a single connection (each receives the notifying session id
+	// plus the event name). This lets one client hold ONE SSE connection for all
+	// its open sessions instead of one per session — which would otherwise
+	// exhaust the browser's ~6-per-host HTTP/1.1 connection limit and stall
+	// further requests.
+	all map[chan pushMsg]struct{}
 }
 
 func newSessionPushBroadcaster() *sessionPushBroadcaster {
 	return &sessionPushBroadcaster{
 		subs: make(map[string]map[chan struct{}]struct{}),
-		all:  make(map[chan string]struct{}),
+		all:  make(map[chan pushMsg]struct{}),
 	}
 }
 
@@ -85,22 +95,25 @@ func (b *sessionPushBroadcaster) unsubscribe(sessionID string, ch chan struct{})
 	b.mu.Unlock()
 }
 
-// subscribeAll registers a multiplexed subscriber that receives the session id
-// of every session that fires a push. Used by the single /api/events stream.
-func (b *sessionPushBroadcaster) subscribeAll() chan string {
-	ch := make(chan string, 16)
+// subscribeAll registers a multiplexed subscriber that receives a pushMsg for
+// every session event. Used by the single /api/events stream.
+func (b *sessionPushBroadcaster) subscribeAll() chan pushMsg {
+	ch := make(chan pushMsg, 16)
 	b.mu.Lock()
 	b.all[ch] = struct{}{}
 	b.mu.Unlock()
 	return ch
 }
 
-func (b *sessionPushBroadcaster) unsubscribeAll(ch chan string) {
+func (b *sessionPushBroadcaster) unsubscribeAll(ch chan pushMsg) {
 	b.mu.Lock()
 	delete(b.all, ch)
 	b.mu.Unlock()
 }
 
+// notify signals both the per-session subscribers (the legacy
+// /sessions/:id/events route) and every multiplexed /api/events subscriber that
+// a background turn completed for sessionID (a "mailbox_push").
 func (b *sessionPushBroadcaster) notify(sessionID string) {
 	b.mu.RLock()
 	for ch := range b.subs[sessionID] {
@@ -109,9 +122,19 @@ func (b *sessionPushBroadcaster) notify(sessionID string) {
 		default:
 		}
 	}
+	b.mu.RUnlock()
+	b.broadcast("mailbox_push", sessionID)
+}
+
+// broadcast sends a named event carrying sessionID to every multiplexed
+// /api/events subscriber so other open browsers stay in sync. Used for
+// session-list changes (created/deleted/renamed); the per-session subs are
+// untouched because they only understand mailbox_push.
+func (b *sessionPushBroadcaster) broadcast(event, sessionID string) {
+	b.mu.RLock()
 	for ch := range b.all {
 		select {
-		case ch <- sessionID:
+		case ch <- pushMsg{Event: event, SID: sessionID}:
 		default:
 		}
 	}

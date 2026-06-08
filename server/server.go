@@ -284,6 +284,10 @@ func newEngine(d serverDeps) *gin.Engine {
 		if d.PushMgr != nil {
 			d.PushMgr.Watch(d.rootCtx, d, meta.ID, sessions.DefaultUserID)
 		}
+		// Tell other open browsers a session appeared so their sidebars refresh.
+		if d.PushEvents != nil {
+			d.PushEvents.broadcast("session_created", meta.ID)
+		}
 		c.JSON(http.StatusCreated, gin.H{
 			"session_id": meta.ID,
 			"created_at": meta.CreatedAt,
@@ -323,6 +327,11 @@ func newEngine(d serverDeps) *gin.Engine {
 		// can be torn down when its last session finishes.
 		if d.Manager != nil {
 			d.Manager.Release(id)
+		}
+		// Tell other open browsers the session is gone so they drop it (and
+		// close any tab holding it).
+		if d.PushEvents != nil {
+			d.PushEvents.broadcast("session_deleted", id)
 		}
 		c.Status(http.StatusNoContent)
 	})
@@ -392,7 +401,9 @@ func newEngine(d serverDeps) *gin.Engine {
 	// which would otherwise exhaust the browser's ~6-per-host HTTP/1.1
 	// connection limit and stall all further requests once enough sessions are
 	// open. Delivers the same events as the per-session route (mailbox_push +
-	// ask_user / ask_user_cancel), plus a connect-time replay of every pending
+	// ask_user / ask_user_cancel), plus session-list changes
+	// (session_created / session_deleted / session_renamed) so other open
+	// browsers stay in sync, plus a connect-time replay of every pending
 	// ask_user question.
 	auth.GET("/events", func(c *gin.Context) {
 		h := c.Writer.Header()
@@ -409,12 +420,12 @@ func newEngine(d serverDeps) *gin.Engine {
 		}
 		flush()
 
-		var pushCh chan string
+		var pushCh chan pushMsg
 		if d.PushEvents != nil {
 			pushCh = d.PushEvents.subscribeAll()
 			defer d.PushEvents.unsubscribeAll(pushCh)
 		} else {
-			pushCh = make(chan string)
+			pushCh = make(chan pushMsg)
 		}
 
 		// Live ask_user / ask_user_cancel for any session (each payload carries
@@ -444,9 +455,9 @@ func newEngine(d serverDeps) *gin.Engine {
 			select {
 			case <-ctx.Done():
 				return
-			case sid := <-pushCh:
-				data, _ := json.Marshal(map[string]any{"session_id": sid})
-				_, _ = fmt.Fprintf(c.Writer, "event: mailbox_push\ndata: %s\n\n", data)
+			case msg := <-pushCh:
+				data, _ := json.Marshal(map[string]any{"session_id": msg.SID})
+				_, _ = fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", msg.Event, data)
 				flush()
 			case be := <-busCh:
 				switch be.Event {
@@ -507,6 +518,10 @@ func newEngine(d serverDeps) *gin.Engine {
 			_ = d.RenameSession(oldName, newName)
 		}
 
+		// Tell other open browsers the title changed so their sidebars refresh.
+		if d.PushEvents != nil {
+			d.PushEvents.broadcast("session_renamed", id)
+		}
 		meta, _ := d.Registry.Get(id)
 		c.JSON(http.StatusOK, meta)
 	})

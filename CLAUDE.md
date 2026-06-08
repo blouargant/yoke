@@ -1095,6 +1095,24 @@ still reads replies from the leader's own inbox, so under background delivery
 its reply can race the drainer — a known limitation, separate from the
 per-turn `teammate_check` tax this removed.)
 
+### Cross-browser session sync (`/api/events`)
+
+The single multiplexed SSE stream `GET /api/events` ([server/server.go](server/server.go))
+that every browser opens once via `subscribeGlobalEvents` ([web/app.js](web/app.js))
+carries, besides `mailbox_push` / `ask_user` / `ask_user_cancel`, three
+**session-list** events so two browsers viewing the same server stay in sync:
+`session_created`, `session_deleted`, and `session_renamed`. Each is emitted by
+`sessionPushBroadcaster.broadcast(event, sid)` ([server/mailbox_push.go](server/mailbox_push.go))
+from the `POST /sessions`, `DELETE /sessions/:id`, and `PATCH /sessions/:id`
+handlers respectively. The multiplexed `all` channel carries a `pushMsg{Event,SID}`
+(the legacy per-session `subs` channel still only understands `mailbox_push`, so
+`notify` fans out to both while `broadcast` touches only `all`). The client
+handles `session_created`/`session_renamed` with a sidebar-only `loadSessions()`
+and `session_deleted` with `forgetSession(sid)` (drops per-session maps + ask
+widgets + `closeTabEverywhere`) then `loadSessions()`. All three handlers are
+idempotent, so the originating browser harmlessly processes its own echoed
+broadcast. New sessions are **never auto-opened** on other browsers — only listed.
+
 ### Hot reload (server mode)
 
 The HTTP server supports rebuilding the agent generation without

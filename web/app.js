@@ -3605,33 +3605,40 @@ function closeTabEverywhere(id) {
   for (const p of panelsWithTab(id)) closeTab(p, id);
 }
 
+// forgetSession drops all client-side state for a session and closes any tab
+// holding it. Shared by the local delete flow and the remote "session_deleted"
+// push (another browser deleted the session).
+function forgetSession(id) {
+  unsubscribeSessionEvents(id);
+  sessionTurnCounts.delete(id);
+  sessionContainers.delete(id);
+  sessionCtxUsage.delete(id);
+  sessionTokenAccum.delete(id);
+  sessionAgentTokens.delete(id);
+  sessionTodos.delete(id);
+  sessionTodoBlock.delete(id);
+  // Remove any pending ask_user widgets belonging to this session from every
+  // pane's slot, plus the queued/ pending maps.
+  for (const p of panels) {
+    const slot = p.els.askSlot;
+    if (!slot) continue;
+    for (const row of [...slot.children]) {
+      if (row.getAttribute("data-session-id") === id) row.remove();
+    }
+  }
+  for (const [qid, entry] of pendingAskWidgets) {
+    if (entry.sessionId === id) pendingAskWidgets.delete(qid);
+  }
+  askWizards.delete(id);
+  queuedAskWidgets.delete(id);
+  // Close the session's tab in every pane that held it.
+  closeTabEverywhere(id);
+}
+
 async function deleteSession(id, li) {
   try {
     await apiFetch(`/api/sessions/${id}`, { method: "DELETE" });
-    unsubscribeSessionEvents(id);
-    sessionTurnCounts.delete(id);
-    sessionContainers.delete(id);
-    sessionCtxUsage.delete(id);
-    sessionTokenAccum.delete(id);
-    sessionAgentTokens.delete(id);
-    sessionTodos.delete(id);
-    sessionTodoBlock.delete(id);
-    // Remove any pending ask_user widgets belonging to this session from every
-    // pane's slot, plus the queued/ pending maps.
-    for (const p of panels) {
-      const slot = p.els.askSlot;
-      if (!slot) continue;
-      for (const row of [...slot.children]) {
-        if (row.getAttribute("data-session-id") === id) row.remove();
-      }
-    }
-    for (const [qid, entry] of pendingAskWidgets) {
-      if (entry.sessionId === id) pendingAskWidgets.delete(qid);
-    }
-    askWizards.delete(id);
-    queuedAskWidgets.delete(id);
-    // Close the session's tab in every pane that held it.
-    closeTabEverywhere(id);
+    forgetSession(id);
     li.remove();
     refreshSidebarActive();
     saveLayout();
@@ -4134,6 +4141,20 @@ async function subscribeGlobalEvents() {
           renderAskUserWidget(sid, data);
         } else if (event === "ask_user_cancel" && data && data.question_id) {
           cancelAskUserWidget(data.question_id);
+        } else if (event === "session_created" && sid) {
+          // Another browser (or this one) created a session — refresh the
+          // sidebar so the new row appears. We never auto-open it.
+          loadSessions();
+        } else if (event === "session_deleted" && sid) {
+          // Another browser deleted a session — drop all local state, close any
+          // tab holding it, and re-render the sidebar. Idempotent if this
+          // browser was the deleter (its own broadcast echoes back).
+          forgetSession(sid);
+          saveLayout();
+          loadSessions();
+        } else if (event === "session_renamed" && sid) {
+          // Title changed elsewhere — re-render the sidebar to pick it up.
+          loadSessions();
         }
       }
     } catch (e) {

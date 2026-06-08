@@ -460,3 +460,44 @@ func TestShippedConfigParity(t *testing.T) {
 		}
 	}
 }
+
+// TestSplitCompoundRedirect guards against treating the '&' in a
+// file-descriptor redirection as a command separator (e.g. `2>&1` must not
+// split into `2>` + `1`). A spurious `1` subcommand would not be covered by
+// any allow rule and would force an otherwise-allowed command to ask.
+func TestSplitCompoundRedirect(t *testing.T) {
+	split := []struct {
+		cmd  string
+		want []string
+	}{
+		{`foo 2>&1`, []string{"foo 2>&1"}},
+		{`foo >&2`, []string{"foo >&2"}},
+		{`foo >&-`, []string{"foo >&-"}},
+		{`foo &>out.log`, []string{"foo &>out.log"}},
+		{`foo &>>out.log`, []string{"foo &>>out.log"}},
+		{`foo 2>&1 && bar`, []string{"foo 2>&1", "bar"}},
+		{`echo a & echo b`, []string{"echo a", "echo b"}}, // real background &
+		{`echo a && echo b`, []string{"echo a", "echo b"}},
+		{`a | b |& c`, []string{"a", "b", "c"}},
+	}
+	for _, c := range split {
+		got := splitCompound(c.cmd)
+		if len(got) != len(c.want) {
+			t.Errorf("splitCompound(%q) = %v, want %v", c.cmd, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("splitCompound(%q)[%d] = %q, want %q", c.cmd, i, got[i], c.want[i])
+			}
+		}
+	}
+
+	// End-to-end: an allowed command piped through read-only filters with a
+	// 2>&1 redirect must stay allowed (regression for the lit-parse report).
+	cfg := cfgFromJSON(t, `{"permissions":{"allow":["Bash(lit parse *)"]}}`)
+	cmd := `lit parse "/abs/path/doc.pdf" --no-ocr 2>&1 | grep -i foo | head -200`
+	if d, r := cfg.CheckArgs("Bash", bash(cmd), "/proj"); d != DecisionAllow {
+		t.Errorf("piped lit parse with 2>&1: want allow, got %v (%s)", d, r)
+	}
+}

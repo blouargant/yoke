@@ -136,7 +136,15 @@ func handleMessages(d serverDeps) gin.HandlerFunc {
 
 		d.Registry.Touch(meta.ID)
 		assistantText := streamEvents(ctx, c.Writer, seq, subCh, bashCwd.get(meta.ID))
-		if ctx.Err() == nil && strings.TrimSpace(assistantText) != "" {
+		// Persist whatever assistant text was streamed, even when the request
+		// context was cancelled (browser tab closed, or a reverse proxy cutting
+		// the SSE stream before the turn finished). The old ctx.Err() == nil guard
+		// silently dropped the turn on any early disconnect, leaving the session
+		// listed but empty when reopened — including from another browser. Disk
+		// I/O does not depend on the request context, so the save still lands; we
+		// keep only the non-empty check so an aborted turn with no output is not
+		// persisted as a blank exchange.
+		if strings.TrimSpace(assistantText) != "" {
 			if err := sessions.AppendConversationTurn(meta.ID, req.Prompt, assistantText); err != nil {
 				log.Printf("server: failed to persist turn: %v", err)
 			}

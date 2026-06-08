@@ -93,6 +93,13 @@ func splitCompound(cmd string) []string {
 				break
 			}
 		}
+		// A lone '&' that belongs to a file-descriptor redirection
+		// (2>&1, >&2, >&-, &>file, &>>file) is NOT a command separator —
+		// splitting it would invent a bogus "1"/"2" subcommand that no
+		// allow rule covers, forcing an otherwise-allowed command to ask.
+		if matched == "&" && isRedirectAmp(cmd, i) {
+			matched = ""
+		}
 		if matched != "" {
 			flush()
 			i += len(matched) - 1
@@ -105,6 +112,25 @@ func splitCompound(cmd string) []string {
 		return []string{strings.TrimSpace(cmd)}
 	}
 	return out
+}
+
+// isRedirectAmp reports whether the single '&' at cmd[i] is part of a
+// file-descriptor redirection rather than a background/compound operator. It
+// is a redirect when it directly follows a '>' (2>&1, >&2, >&-) or directly
+// precedes one (&>file, &>>file); intervening spaces/tabs are skipped.
+func isRedirectAmp(cmd string, i int) bool {
+	j := i - 1
+	for j >= 0 && (cmd[j] == ' ' || cmd[j] == '\t') {
+		j--
+	}
+	if j >= 0 && cmd[j] == '>' {
+		return true
+	}
+	k := i + 1
+	for k < len(cmd) && (cmd[k] == ' ' || cmd[k] == '\t') {
+		k++
+	}
+	return k < len(cmd) && cmd[k] == '>'
 }
 
 // commandWrappers are process wrappers Claude Code strips before matching, so
