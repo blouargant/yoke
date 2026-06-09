@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/blouargant/yoke/core/embed"
 	"github.com/blouargant/yoke/internal/codeindex"
@@ -16,6 +17,26 @@ import (
 	"github.com/blouargant/yoke/internal/regindex"
 	"github.com/blouargant/yoke/internal/registries"
 )
+
+// embedderProbeTimeout bounds the one-shot startup health check so a hung or
+// slow embeddings endpoint can't stall the first session that touches recall.
+const embedderProbeTimeout = 15 * time.Second
+
+// probeEmbedder exercises the resolved embedder with a single tiny embed call.
+// embed.NewWithSelection only constructs the HTTP client — it never contacts
+// the endpoint — so a configuration that *builds* cleanly but is *rejected at
+// request time (e.g. a model id the gateway answers with HTTP 400) would
+// otherwise only fail mid-session, on every recall call. Probing once at
+// resolution lets a broken embedder be treated as "no embedder", so every
+// recall path falls back to glob/grep instead of surfacing errors. Uses a fresh
+// background context (not the caller's, which may be a request scope that gets
+// cancelled) bounded by embedderProbeTimeout.
+func probeEmbedder(emb embed.Embedder) error {
+	ctx, cancel := context.WithTimeout(context.Background(), embedderProbeTimeout)
+	defer cancel()
+	_, err := emb.Embed(ctx, []string{"ping"})
+	return err
+}
 
 // embedderEnvConfigured reports whether the operator set any YOKE_EMBED_*
 // environment variable, signalling an environment-driven embedder.
@@ -78,9 +99,20 @@ func (i *Infrastructure) Embedder(ctx context.Context, runtime RuntimeSettings) 
 		i.embed.emb, i.embed.err = ResolveEmbedder(ctx, runtime)
 		if i.embed.err != nil {
 			log.Printf("embed: semantic recall disabled: %v", i.embed.err)
-		} else if i.embed.emb != nil {
-			log.Printf("embed: semantic recall enabled (model %q)", i.embed.emb.Model())
+			return
 		}
+		if i.embed.emb == nil {
+			return
+		}
+		// Health-check the embedder so a build-OK-but-request-broken config
+		// (e.g. a model the gateway rejects with HTTP 400) degrades to "no
+		// embedder" rather than erroring on every recall call mid-session.
+		if err := probeEmbedder(i.embed.emb); err != nil {
+			log.Printf("embed: semantic recall disabled — embedder health check failed, falling back to glob/grep: %v", err)
+			i.embed.emb, i.embed.err = nil, err
+			return
+		}
+		log.Printf("embed: semantic recall enabled (model %q)", i.embed.emb.Model())
 	})
 	return i.embed.emb
 }

@@ -152,7 +152,7 @@ func (p *Store) Len() int {
 
 type recallIn struct {
 	Query string `json:"query"`
-	K     int    `json:"k"`
+	K     int    `json:"k,omitempty"`
 }
 
 type recallOut struct {

@@ -46,6 +46,21 @@ func TestQueueStartProducesCompletedNotification(t *testing.T) {
 	}
 }
 
+func TestQueueStartEnforcesSafetyFloor(t *testing.T) {
+	q := NewQueue(1)
+	q.Start("danger", "mkfs.ext4 /dev/sdb", time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	n, ok := q.Wait(ctx)
+	if !ok {
+		t.Fatal("Wait() = false, want blocked result")
+	}
+	if n.Status != "blocked" {
+		t.Fatalf("Status = %q, want blocked (safety floor must apply to the background queue)", n.Status)
+	}
+}
+
 func TestFormatNotification(t *testing.T) {
 	t.Parallel()
 

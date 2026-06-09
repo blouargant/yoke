@@ -132,7 +132,7 @@ func (r *recaller) refresh(ctx context.Context) error {
 
 type recallIn struct {
 	Query string `json:"query"`
-	K     int    `json:"k"`
+	K     int    `json:"k,omitempty"`
 }
 
 type recallHit struct {

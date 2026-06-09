@@ -434,7 +434,7 @@ func (i *Index) onRegistriesSaved() {
 
 type searchIn struct {
 	Query string `json:"query"`
-	K     int    `json:"k"`
+	K     int    `json:"k,omitempty"`
 }
 type searchOut struct {
 	Results []Hit `json:"results"`

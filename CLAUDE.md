@@ -353,7 +353,16 @@ built lazily and surviving hot-reload. **Contract: when no embedder resolves,
 none of the recall tools are mounted and every path falls back to glob/grep —
 behaviour is byte-identical to a build without these features.** See
 [agent/embedder.go](agent/embedder.go) `ResolveEmbedder` for the
-`embed_model_ref` → `YOKE_EMBED_*` precedence.
+`embed_model_ref` → `YOKE_EMBED_*` precedence. The cached `Infrastructure.Embedder()`
+accessor additionally **health-probes** a freshly-resolved embedder with one tiny
+`Embed("ping")` (`probeEmbedder`, 15s timeout, background ctx): because
+`embed.NewWithSelection` only *builds* the HTTP client and never contacts the
+endpoint, a config that resolves cleanly but is rejected at request time (e.g. a
+model id the gateway answers with HTTP 400) would otherwise only fail mid-session
+on every recall call — the probe demotes it to nil so the same glob/grep fallback
+applies. The probe runs once (memoised with the embedder), so a transient blip at
+first use disables recall until restart; the explicit `yoke embed-test` /
+`reindex-*` CLI commands bypass the probe and surface the real build/request error.
 
 **Embedding dimension is the dominant cost lever.** go-turbovec builds, per
 index, a `dim×dim` rotation matrix (Π) and a `dim×dim` QJL matrix (S) — `O(dim²)`

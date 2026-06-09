@@ -3419,6 +3419,40 @@ function resolveToolCall(block, response) {
     return;
   }
 
+  // load_skill returns the skill's SKILL.md body in `instructions` (markdown)
+  // alongside its `frontmatter`/`skill_name`. Render that body as markdown
+  // rather than dumping the whole JSON object as a <pre>.
+  const isSkillLoad = /^load_skill/.test(toolName);
+  if (isSkillLoad && !isError && response && typeof response === "object"
+      && typeof response.instructions === "string") {
+    const outDiv = document.createElement("div");
+    outDiv.className = "tool-section";
+    const label = document.createElement("div");
+    label.className = "tool-section-label label-out";
+    label.textContent = "SKILL";
+    outDiv.appendChild(label);
+
+    // Surface the dependency gate's notice (e.g. a missing/declined install)
+    // so the user sees why a skill may be running in its fallback mode.
+    if (typeof response.dependency_status === "string" && response.dependency_status.trim()) {
+      const note = document.createElement("div");
+      note.className = "tool-skill-note";
+      note.textContent = response.dependency_status.trim();
+      outDiv.appendChild(note);
+    }
+
+    const md = document.createElement("div");
+    md.className = "tool-md";
+    if (typeof marked !== "undefined" && typeof marked.parse === "function") {
+      md.innerHTML = marked.parse(response.instructions);
+    } else {
+      md.textContent = response.instructions;
+    }
+    outDiv.appendChild(md);
+    slot.replaceWith(outDiv);
+    return;
+  }
+
   const text = isError ? response.error : extractResponse(response);
   const outDiv = document.createElement("div");
   outDiv.className = "tool-section";

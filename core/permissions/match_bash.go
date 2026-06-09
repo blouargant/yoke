@@ -142,6 +142,13 @@ var commandWrappers = map[string]bool{
 // durationOrNumber loosely matches a wrapper argument like "30", "30s", "1m".
 var durationOrNumber = regexp.MustCompile(`^\d+[a-zA-Z]*$`)
 
+// awkWritesFile heuristically detects an awk program that writes a file or runs
+// a command: an append redirect (>>), a redirect to a quoted filename (> "f"),
+// a system() call, or a pipe to a command (| "cmd"). Numeric / line-range
+// comparisons (NR>=10, $1 > 5) use >= or > followed by a number, so they don't
+// match — keeping common read-only awk filters auto-allowed.
+var awkWritesFile = regexp.MustCompile(`>>|>[ \t]*"|system[ \t]*\(|\|[ \t]*"`)
+
 // stripWrappers removes recognised process wrappers (and their immediate
 // option/duration arguments) from the front of a subcommand, returning the
 // inner command. Bare "xargs" (no flags) is also stripped; "xargs -n1 …" is
@@ -196,6 +203,18 @@ var readOnlyCommands = map[string]bool{
 	"ls": true, "cat": true, "echo": true, "pwd": true, "head": true,
 	"tail": true, "grep": true, "wc": true, "which": true, "diff": true,
 	"stat": true, "du": true, "cd": true, "file": true, "true": true,
+	// Read-only text filters (stdout-only; no file-writing mode). sed/sort/awk
+	// have mutating modes and are guarded in isReadOnlyCommand below instead.
+	"cut": true, "tr": true, "jq": true, "tac": true, "rev": true,
+	"nl": true, "column": true, "fold": true, "fmt": true, "paste": true,
+	"comm": true, "expand": true, "unexpand": true,
+	// Harmless no-op / inspection utilities (no side effects). `env` is NOT
+	// here — `env FOO=bar cmd` executes cmd — and `hostname NAME` / `date -s`
+	// can mutate, so date is guarded below and hostname is omitted.
+	"sleep": true, "seq": true, "false": true, ":": true,
+	"test": true, "[": true, "basename": true, "dirname": true,
+	"realpath": true, "readlink": true, "printenv": true,
+	"whoami": true, "id": true, "uname": true,
 }
 
 // readOnlyGitSubcommands are the git subcommands that do not mutate the working
@@ -226,6 +245,46 @@ func isReadOnlyCommand(sub string) bool {
 			}
 		}
 		return true
+	case "date":
+		// date prints the time and is read-only unless it sets the system
+		// clock (-s / --set). -s is the only single-letter date flag with 's'.
+		for _, f := range fields[1:] {
+			if strings.HasPrefix(f, "--set") {
+				return false
+			}
+			if strings.HasPrefix(f, "-") && !strings.HasPrefix(f, "--") && strings.ContainsRune(f, 's') {
+				return false
+			}
+		}
+		return true
+	case "sed", "gsed":
+		// sed is read-only unless it edits in place (-i / --in-place). -i is
+		// the only single-letter sed flag containing 'i', so any short-flag
+		// bundle with an 'i' (e.g. -ni) also enables in-place editing.
+		for _, f := range fields[1:] {
+			if strings.HasPrefix(f, "--in-place") {
+				return false
+			}
+			if strings.HasPrefix(f, "-") && !strings.HasPrefix(f, "--") && strings.ContainsRune(f, 'i') {
+				return false
+			}
+		}
+		return true
+	case "sort":
+		// sort is read-only unless it writes an output file (-o / --output).
+		// -o is the only single-letter sort flag containing 'o'.
+		for _, f := range fields[1:] {
+			if strings.HasPrefix(f, "--output") {
+				return false
+			}
+			if strings.HasPrefix(f, "-") && !strings.HasPrefix(f, "--") && strings.ContainsRune(f, 'o') {
+				return false
+			}
+		}
+		return true
+	case "awk", "gawk", "mawk":
+		// awk is read-only unless its program writes a file or runs a command.
+		return !awkWritesFile.MatchString(sub)
 	case "git":
 		if len(fields) >= 2 {
 			return readOnlyGitSubcommands[fields[1]]

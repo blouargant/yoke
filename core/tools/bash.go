@@ -17,6 +17,20 @@ import (
 // is the hard floor that always applies, even when permissions are disabled.
 var alwaysBlock = []string{"rm -rf /", ":(){:|:&};:", "mkfs"}
 
+// SafetyFloorBlock reports whether command trips the hard safety floor,
+// returning the offending substring. It is the single source of truth shared
+// by RunBash, RunBashInteractive, and any other surface that executes a shell
+// command (e.g. the bash_background queue) so the floor can never be bypassed
+// by routing around RunBash.
+func SafetyFloorBlock(command string) (string, bool) {
+	for _, b := range alwaysBlock {
+		if strings.Contains(command, b) {
+			return b, true
+		}
+	}
+	return "", false
+}
+
 // cwdSentinel prefixes the line RunBashInteractive appends to capture the
 // shell's working directory after the command ran (so an embedded `cd`
 // persists across the interactive "!" shell-escape). It is unlikely to
@@ -168,10 +182,8 @@ type BashOut struct {
 // RunBash executes a shell command via /bin/sh -c, with a default 120s
 // timeout. Output is truncated at MaxToolOutput.
 func RunBash(ctx context.Context, in BashIn) (string, error) {
-	for _, b := range alwaysBlock {
-		if strings.Contains(in.Command, b) {
-			return fmt.Sprintf("Error: command blocked by safety floor (%q)", b), nil
-		}
+	if b, blocked := SafetyFloorBlock(in.Command); blocked {
+		return fmt.Sprintf("Error: command blocked by safety floor (%q)", b), nil
 	}
 	timeout := time.Duration(in.Timeout) * time.Second
 	if timeout <= 0 {
@@ -216,10 +228,8 @@ func RunBash(ctx context.Context, in BashIn) (string, error) {
 // explicitly), but the hard safety floor still applies. timeoutSec ≤ 0 uses
 // the configured default. On any error newCwd falls back to the input cwd.
 func RunBashInteractive(ctx context.Context, command, cwd string, timeoutSec int) (output, newCwd string, err error) {
-	for _, b := range alwaysBlock {
-		if strings.Contains(command, b) {
-			return fmt.Sprintf("Error: command blocked by safety floor (%q)", b), cwd, nil
-		}
+	if b, blocked := SafetyFloorBlock(command); blocked {
+		return fmt.Sprintf("Error: command blocked by safety floor (%q)", b), cwd, nil
 	}
 	timeout := time.Duration(timeoutSec) * time.Second
 	if timeout <= 0 {

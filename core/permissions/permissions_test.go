@@ -394,14 +394,14 @@ func TestReloaderPicksUpFileChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := NewReloader(base, []string{overlay}, nil)
-	if d, _ := r.Snapshot().CheckArgs("Bash", bash("jq foo"), ""); d != DecisionAsk {
+	if d, _ := r.Snapshot().CheckArgs("Bash", bash("frobnicate foo"), ""); d != DecisionAsk {
 		t.Fatalf("pre-overlay should ask: %v", d)
 	}
-	if err := os.WriteFile(overlay, []byte(`{"permissions":{"allow":["Bash(jq *)"]}}`), 0o644); err != nil {
+	if err := os.WriteFile(overlay, []byte(`{"permissions":{"allow":["Bash(frobnicate *)"]}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_ = r.Refresh()
-	if d, _ := r.Snapshot().CheckArgs("Bash", bash("jq foo"), ""); d != DecisionAllow {
+	if d, _ := r.Snapshot().CheckArgs("Bash", bash("frobnicate foo"), ""); d != DecisionAllow {
 		t.Fatalf("post-overlay should allow: %v", d)
 	}
 }
@@ -496,8 +496,89 @@ func TestSplitCompoundRedirect(t *testing.T) {
 	// End-to-end: an allowed command piped through read-only filters with a
 	// 2>&1 redirect must stay allowed (regression for the lit-parse report).
 	cfg := cfgFromJSON(t, `{"permissions":{"allow":["Bash(lit parse *)"]}}`)
-	cmd := `lit parse "/abs/path/doc.pdf" --no-ocr 2>&1 | grep -i foo | head -200`
-	if d, r := cfg.CheckArgs("Bash", bash(cmd), "/proj"); d != DecisionAllow {
-		t.Errorf("piped lit parse with 2>&1: want allow, got %v (%s)", d, r)
+	pipelines := []string{
+		`lit parse "/abs/path/doc.pdf" --no-ocr 2>&1 | grep -i foo | head -200`,
+		`lit parse "/abs/path/doc.pdf" --format text --no-ocr 2>&1 | sed -n '7500,7560p'`,
+		`lit parse "/abs/doc.pdf" 2>&1 | awk 'NR>=10 && NR<=20'`,
+		`lit parse "/abs/doc.pdf" 2>&1 | cut -d: -f1 | sort`,
+		`lit parse "/abs/doc.pdf" 2>&1 | tr a-z A-Z | jq .`,
+	}
+	for _, cmd := range pipelines {
+		if d, r := cfg.CheckArgs("Bash", bash(cmd), "/proj"); d != DecisionAllow {
+			t.Errorf("pipeline %q: want allow, got %v (%s)", cmd, d, r)
+		}
+	}
+}
+
+// TestReadOnlyFilters covers the guarded read-only text filters: read-only in
+// their printing modes, but mutating (so they fall through to ask) when they
+// edit/write in place.
+func TestReadOnlyFilters(t *testing.T) {
+	readOnly := []string{
+		`sed -n '1,10p'`,
+		`sed 's/a/b/'`,
+		`sort -rn`,
+		`awk 'NR>=10 && NR<=20'`,
+		`awk '{print $2}'`,
+		`awk '$1 > 5'`,
+		`cut -d, -f2`,
+		`tr a-z A-Z`,
+		`jq .items`,
+		`tac`, `rev`, `column -t`, `comm -12 a b`,
+		// harmless no-op / inspection utilities
+		`sleep 30`, `seq 1 10`, `:`, `test -f x`, `[ -d y ]`,
+		`basename /a/b`, `dirname /a/b`, `realpath .`, `readlink -f x`,
+		`printenv PATH`, `whoami`, `id -u`, `uname -a`,
+		`date +%s`, `date -u`, `date -d "2020-01-01"`,
+	}
+	for _, c := range readOnly {
+		if !isReadOnlyCommand(c) {
+			t.Errorf("isReadOnlyCommand(%q) = false, want true", c)
+		}
+	}
+	mutating := []string{
+		`sed -i 's/a/b/' f`,
+		`sed -i.bak 's/a/b/' f`,
+		`sed --in-place 's/a/b/' f`,
+		`sort -o out.txt in.txt`,
+		`sort --output=out.txt in.txt`,
+		`awk '{print > "out.txt"}'`,
+		`awk '{print >> "out.txt"}'`,
+		`awk 'BEGIN{system("rm x")}'`,
+		`date -s "2020-01-01"`,
+		`date --set="2020-01-01"`,
+	}
+	for _, c := range mutating {
+		if isReadOnlyCommand(c) {
+			t.Errorf("isReadOnlyCommand(%q) = true, want false", c)
+		}
+	}
+}
+
+// TestBashBackgroundAliasesBash verifies that bash_background is governed by
+// the same Bash(...) rules as the Bash tool: an allow rule covers it, and the
+// tools:["Bash"]-scoped catastrophic denies still fire (they key on tool name).
+func TestBashBackgroundAliasesBash(t *testing.T) {
+	cfg := cfgFromJSON(t, `{"permissions":{
+		"allow":["Bash(lit parse *)"],
+		"deny":[{"regex":"\\bmkfs\\b","reason":"no mkfs","tools":["Bash"]}]
+	}}`)
+	cases := []struct {
+		cmd  string
+		want Decision
+	}{
+		{`lit parse "/abs/doc.pdf" -o /tmp/o.txt 2>&1`, DecisionAllow},
+		{`mkfs.ext4 /dev/sdb`, DecisionDeny},
+		{`frobnicate --now`, DecisionAsk}, // unknown command still asks, like Bash
+	}
+	for _, c := range cases {
+		got, _ := cfg.CheckArgs("bash_background", map[string]any{"command": c.cmd, "label": "x"}, "/proj")
+		bashGot, _ := cfg.CheckArgs("Bash", bash(c.cmd), "/proj")
+		if got != c.want {
+			t.Errorf("bash_background %q: want %v got %v", c.cmd, c.want, got)
+		}
+		if got != bashGot {
+			t.Errorf("bash_background %q (%v) disagrees with Bash (%v)", c.cmd, got, bashGot)
+		}
 	}
 }

@@ -18,6 +18,8 @@ import (
 
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
+
+	"github.com/blouargant/yoke/core/tools"
 )
 
 // Notification carries a completed background result.
@@ -77,6 +79,18 @@ func (q *Queue) Start(label, command string, timeout time.Duration) {
 	}
 	go func() {
 		started := time.Now()
+		// The hard safety floor applies to every shell surface, including the
+		// background queue (which execs directly rather than via RunBash).
+		if b, blocked := tools.SafetyFloorBlock(command); blocked {
+			q.ch <- Notification{
+				Label:   label,
+				Status:  "blocked",
+				Output:  fmt.Sprintf("command blocked by safety floor (%q)", b),
+				Started: started,
+				Ended:   time.Now(),
+			}
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
