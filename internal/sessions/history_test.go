@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -124,6 +125,97 @@ func TestArchivedFlagRoundTrip(t *testing.T) {
 	}
 	if meta := reloaded(); meta == nil || meta.Archived {
 		t.Fatalf("Archived still set after unarchive: %+v", meta)
+	}
+}
+
+// TestConcurrentMutatorsDoNotLoseTurns exercises the per-session lock: many
+// goroutines append turns while others flip the harvested/archived/title flags
+// on the same session. Every append must survive — the old unsynchronised
+// load-modify-save lost updates (and could read a half-written file and reset
+// the whole history). Run with -race to also catch the data race directly.
+func TestConcurrentMutatorsDoNotLoseTurns(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("YOKE_HOME", tmp)
+	if err := os.MkdirAll(filepath.Join(tmp, "logs"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const sid = "concurrent-test"
+	const appends = 50
+
+	var wg sync.WaitGroup
+	for i := 0; i < appends; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			if err := AppendConversationTurn(sid, "u", "a"); err != nil {
+				t.Errorf("AppendConversationTurn: %v", err)
+			}
+		}(i)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = SetConversationHarvested(sid, true)
+			_ = SetConversationTitle(sid, "t")
+			_ = SetConversationArchived(sid, false)
+		}()
+	}
+	wg.Wait()
+
+	turns, err := LoadConversationTurns(sid)
+	if err != nil {
+		t.Fatalf("LoadConversationTurns: %v", err)
+	}
+	if len(turns) != appends {
+		t.Fatalf("got %d turns after %d concurrent appends, want %d (turns were lost)", len(turns), appends, appends)
+	}
+}
+
+// TestCorruptConversationFileQuarantined verifies that a syntactically corrupt
+// conversation file does NOT cause the next write to silently discard the
+// history: the original bytes are quarantined to a *.corrupt-* sidecar, and the
+// session keeps working. This is the safety net behind the atomic-write fix.
+func TestCorruptConversationFileQuarantined(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("YOKE_HOME", tmp)
+	logs := filepath.Join(tmp, "logs")
+	if err := os.MkdirAll(logs, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const sid = "corrupt-test"
+	// Hand-write a truncated/corrupt conversation file (as an interrupted
+	// non-atomic write from an old build would have left behind).
+	corrupt := []byte(`{"turns":[{"user_text":"a","assistant_text":"b","at":"2024`)
+	if err := os.WriteFile(ConversationPath(sid), corrupt, 0o644); err != nil {
+		t.Fatalf("write corrupt: %v", err)
+	}
+
+	// The next mutation must not error out and must not destroy the bytes.
+	if err := AppendConversationTurn(sid, "hi", "hello"); err != nil {
+		t.Fatalf("AppendConversationTurn over corrupt file: %v", err)
+	}
+
+	// The session recovered: the new file holds the appended turn.
+	turns, err := LoadConversationTurns(sid)
+	if err != nil {
+		t.Fatalf("LoadConversationTurns: %v", err)
+	}
+	if len(turns) != 1 || turns[0].UserText != "hi" {
+		t.Fatalf("recovered turns = %+v, want one {hi}", turns)
+	}
+
+	// The corrupt bytes were preserved, not deleted.
+	matches, _ := filepath.Glob(filepath.Join(logs, "conversation_"+sid+".json.corrupt-*"))
+	if len(matches) != 1 {
+		t.Fatalf("expected exactly one quarantined file, found %v", matches)
+	}
+	saved, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("read quarantine: %v", err)
+	}
+	if !bytes.Equal(saved, corrupt) {
+		t.Fatalf("quarantined bytes = %q, want original corrupt bytes preserved", saved)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/blouargant/yoke/agent"
@@ -16,6 +17,20 @@ import (
 // logsDir returns the per-user logs directory ($YOKE_HOME/logs). Resolved
 // at each call so tests can redirect via t.Setenv("YOKE_HOME", ...).
 func logsDir() string { return paths.LogsDir() }
+
+// convLocks serialises read-modify-write access to each session's conversation
+// file. Every mutator below loads the file, edits it, and writes it back;
+// without a per-session lock two goroutines (a user turn, a background mailbox
+// push, the idle curator's harvest-flag write, the idle indexer, async title
+// generation) can interleave their load/save — losing each other's updates or,
+// worse, reading a half-written file and treating it as corrupt. Keyed by
+// sessionID so unrelated sessions never contend.
+var convLocks sync.Map // sessionID -> *sync.Mutex
+
+func convLock(sessionID string) *sync.Mutex {
+	m, _ := convLocks.LoadOrStore(sessionID, &sync.Mutex{})
+	return m.(*sync.Mutex)
+}
 
 // ConversationTurn is one user→assistant exchange persisted to disk.
 type ConversationTurn struct {
@@ -50,6 +65,11 @@ func LoadConversationFile(sessionID string) (*ConversationFile, error) {
 		}
 		return nil, err
 	}
+	// An empty (0-byte) file is a fresh/never-written session, not corruption —
+	// treat it as empty rather than letting json.Unmarshal fail on it.
+	if len(data) == 0 {
+		return &ConversationFile{}, nil
+	}
 	// Transparently migrate legacy plain-array format.
 	if len(data) > 0 && data[0] == '[' {
 		var turns []ConversationTurn
@@ -66,15 +86,115 @@ func LoadConversationFile(sessionID string) (*ConversationFile, error) {
 }
 
 // SaveConversationFile writes f to disk under the session's conversation path.
+// The write is atomic: it lands in a temp file in the same directory which is
+// fsync'd and then renamed over the target. os.Rename is atomic on POSIX, so a
+// concurrent reader — or a server killed mid-write (e.g. a restart) — never
+// observes a truncated/partial conversation file. That partial-file state is
+// what used to make the next load fail and silently reset the whole history to
+// a single turn.
 func SaveConversationFile(sessionID string, f *ConversationFile) error {
-	if err := os.MkdirAll(logsDir(), 0755); err != nil {
+	dir := logsDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(ConversationPath(sessionID), data, 0644)
+	tmp, err := os.CreateTemp(dir, "conversation_*.json.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { _ = tmp.Close(); _ = os.Remove(tmpName) }
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0644); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, ConversationPath(sessionID)); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
+}
+
+// loadForWrite loads a session's conversation file for a read-modify-write
+// mutation. Unlike LoadConversationFile it never lets a bad file destroy data:
+//
+//   - a missing or empty file yields a fresh ConversationFile (normal new session);
+//   - an unreadable file (genuine I/O error) returns the error so the caller
+//     aborts the write and the existing bytes are left untouched;
+//   - a syntactically corrupt file (only reachable for files written by an old
+//     non-atomic build, since writes are now atomic) is quarantined to
+//     conversation_<id>.json.corrupt-<ts> so its bytes are preserved for manual
+//     recovery, and a fresh file is started — the session keeps working instead
+//     of every future write re-failing on the same bad file.
+//
+// This replaces the previous "any load error → start from an empty file"
+// behaviour, which silently discarded the entire history on a single transient
+// or partial read.
+func loadForWrite(sessionID string) (*ConversationFile, error) {
+	path := ConversationPath(sessionID)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &ConversationFile{}, nil
+		}
+		return nil, err
+	}
+	if len(data) == 0 {
+		return &ConversationFile{}, nil
+	}
+	var jerr error
+	if data[0] == '[' {
+		var turns []ConversationTurn
+		if jerr = json.Unmarshal(data, &turns); jerr == nil {
+			return &ConversationFile{Turns: turns}, nil
+		}
+	} else {
+		var f ConversationFile
+		if jerr = json.Unmarshal(data, &f); jerr == nil {
+			return &f, nil
+		}
+	}
+	// Corrupt JSON. Preserve the original bytes before starting fresh so a
+	// single bad file neither destroys the history nor permanently bricks the
+	// session.
+	quarantine := fmt.Sprintf("%s.corrupt-%d", path, time.Now().UnixNano())
+	if rerr := os.Rename(path, quarantine); rerr != nil {
+		return nil, fmt.Errorf("conversation %s is corrupt (%v) and could not be quarantined: %w", sessionID, jerr, rerr)
+	}
+	log.Printf("history: conversation %s was corrupt (%v); preserved original at %s and started fresh", sessionID, jerr, quarantine)
+	return &ConversationFile{}, nil
+}
+
+// mutateConversation serialises a load-modify-save against a session's
+// conversation file under its per-session lock, writing the result atomically.
+// On a load error it returns without writing, so a transient failure never
+// clobbers existing turns.
+func mutateConversation(sessionID string, fn func(*ConversationFile)) error {
+	mu := convLock(sessionID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	f, err := loadForWrite(sessionID)
+	if err != nil {
+		return err
+	}
+	fn(f)
+	return SaveConversationFile(sessionID, f)
 }
 
 // LoadConversationTurns returns just the turn list for a session.
@@ -89,61 +209,38 @@ func LoadConversationTurns(sessionID string) ([]ConversationTurn, error) {
 // AppendConversationTurn appends one user→assistant exchange and clears
 // the Harvested flag so a fresh idle scan re-evaluates the session.
 func AppendConversationTurn(sessionID, userText, assistantText string) error {
-	f, err := LoadConversationFile(sessionID)
-	if err != nil || f == nil {
-		f = &ConversationFile{}
-	}
-	f.Turns = append(f.Turns, ConversationTurn{
-		UserText:      userText,
-		AssistantText: assistantText,
-		At:            time.Now(),
+	return mutateConversation(sessionID, func(f *ConversationFile) {
+		f.Turns = append(f.Turns, ConversationTurn{
+			UserText:      userText,
+			AssistantText: assistantText,
+			At:            time.Now(),
+		})
+		f.Harvested = false // new activity resets the harvest flag
 	})
-	f.Harvested = false // new activity resets the harvest flag
-	return SaveConversationFile(sessionID, f)
 }
 
 // SetConversationHarvested persists the Harvested flag to disk without
 // touching the conversation turns. Called by the idle harvester.
 func SetConversationHarvested(sessionID string, v bool) error {
-	f, err := LoadConversationFile(sessionID)
-	if err != nil || f == nil {
-		f = &ConversationFile{}
-	}
-	f.Harvested = v
-	return SaveConversationFile(sessionID, f)
+	return mutateConversation(sessionID, func(f *ConversationFile) { f.Harvested = v })
 }
 
 // SetConversationArchived persists the Archived flag to disk without touching
 // the conversation turns. Called when a session is archived or unarchived.
 func SetConversationArchived(sessionID string, v bool) error {
-	f, err := LoadConversationFile(sessionID)
-	if err != nil || f == nil {
-		f = &ConversationFile{}
-	}
-	f.Archived = v
-	return SaveConversationFile(sessionID, f)
+	return mutateConversation(sessionID, func(f *ConversationFile) { f.Archived = v })
 }
 
 // SetConversationSquad persists the squad name to disk without touching the
 // conversation turns. Called when a new session is first created so the
 // choice survives a server restart.
 func SetConversationSquad(sessionID, squad string) error {
-	f, err := LoadConversationFile(sessionID)
-	if err != nil || f == nil {
-		f = &ConversationFile{}
-	}
-	f.Squad = squad
-	return SaveConversationFile(sessionID, f)
+	return mutateConversation(sessionID, func(f *ConversationFile) { f.Squad = squad })
 }
 
 // SetConversationTitle persists the session title without touching turns.
 func SetConversationTitle(sessionID, title string) error {
-	f, err := LoadConversationFile(sessionID)
-	if err != nil || f == nil {
-		f = &ConversationFile{}
-	}
-	f.Title = title
-	return SaveConversationFile(sessionID, f)
+	return mutateConversation(sessionID, func(f *ConversationFile) { f.Title = title })
 }
 
 // DeleteConversationFile removes the on-disk file for a session.
