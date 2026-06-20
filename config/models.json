@@ -19,21 +19,28 @@
     },
     "balanced": {
       "provider_ref": "openai-compat",
-      "model": "qwen3.6-35b-a3b-scaleway",
+      "model": "Balanced",
       "context_length": 256000,
       "input_token_price_per_million": 0.26,
       "output_token_price_per_million": 1.58
     },
     "high": {
       "provider_ref": "openai-compat",
-      "model": "qwen3.5-397b-a17b-scaleway",
+      "model": "High",
+      "context_length": 250000,
+      "input_token_price_per_million": 0.63,
+      "output_token_price_per_million": 3.78
+    },
+    "hosted": {
+      "provider_ref": "openai-compat",
+      "model": "Hosted",
       "context_length": 250000,
       "input_token_price_per_million": 0.63,
       "output_token_price_per_million": 3.78
     },
     "imagegen": {
       "provider_ref": "openai-compat",
-      "model": "gemini-3-pro-image-preview",
+      "model": "ImageGen",
       "context_length": 65536,
       "disable_streaming": true,
       "input_token_price_per_million": 2.1,
@@ -41,14 +48,14 @@
     },
     "premium": {
       "provider_ref": "openai-compat",
-      "model": "claude-sonnet-4-6",
+      "model": "Premium",
       "context_length": 200000,
       "input_token_price_per_million": 5,
       "output_token_price_per_million": 26
     },
     "simple": {
       "provider_ref": "openai-compat",
-      "model": "gemma-4-26b-a4b-it-scaleway",
+      "model": "Simple",
       "context_length": 256000,
       "input_token_price_per_million": 0.17,
       "output_token_price_per_million": 0.69
