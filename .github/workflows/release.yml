@@ -122,6 +122,15 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # goreleaser auto-detects the "current tag" from git, NOT from the
+          # tag that triggered this workflow. When a stable tag (vA.B.C) and an
+          # earlier rc/beta tag sit on the SAME commit (the normal promotion
+          # flow: tag develop as -beta1, later tag that same commit as vA.B.C),
+          # the auto-detection can pick the wrong one — re-publishing to the
+          # pre-existing pre-release and never creating the vA.B.C release, so
+          # the downstream MSI job's `gh release download` 404s. Pin goreleaser
+          # to the tag that actually triggered the run.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
           # PAT with write access to blouargant/homebrew-tap, required to push
           # the generated Formula/yoke.rb. Add it as a repo/org secret. Without
           # it, goreleaser fails only the brew publish, not the GitHub release.
