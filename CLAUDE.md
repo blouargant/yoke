@@ -675,10 +675,25 @@ by the user omit the flag. The web UI groups them under separate
 
 The registry directory uses the same 3-layer lookup as config files:
 `.agents/registry/agents` (and `agents/registry/agents` when that alias dir
-exists), `$HOME/.yoke/registry/agents`, then `/etc/yoke/registry/agents` —
+exists), `$HOME/.yoke/registry/agents`, then `/etc/yoke/registry/agents`, then
+finally the **shared Agent-Skills registry** `/etc/agentskills/agents` —
 first existing directory wins. (The registry subdirs sit one level below
 their layer's config files: e.g. system has `/etc/yoke/agents.json` next
 to `/etc/yoke/registry/agents/`.)
+
+**Shared Agent-Skills registry (`/etc/agentskills`).** An extra,
+**lowest-precedence, registry-only** layer (`paths.AgentSkillsDir`, default
+`/etc/agentskills`, override/disable via `YOKE_AGENTSKILLS_DIR`). When the
+directory exists it is treated like a `/etc/yoke/registry` **root** — its
+`agents/` and `skills/` subdirectories (note: no `registry/` prefix) contribute
+agent and skill definitions — letting yoke pick up an Agent-Skills registry
+installed by other tools. It sits **below** `/etc/yoke` in both the agent
+(`agentsRegistrySearchDirs`) and skill (`SkillsAllSearchDirs` /
+`skillsRegistrySearchDirs`) search chains, so yoke's own system registry wins on
+name conflicts. It is **not** in `ConfigSearchDirs` (no `agents.json` etc. read
+from there) and is **never written to** — items edited via the web UI fork into
+the user layer, exactly like `/etc/yoke` (`paths.Layer` classifies it as
+`system`). Absent ⇒ byte-identical no-op (consumers stat-and-skip).
 
 ### Filesystem layout
 
@@ -696,6 +711,12 @@ Two roots, resolved by [internal/paths/paths.go](internal/paths/paths.go):
      registries live at `/etc/yoke/registry/agents` and
      `/etc/yoke/registry/skills`; every other config file is directly
      under `/etc/yoke/`.
+
+  Plus one **registry-only** layer below all of the above, in the agent/skill
+  search chains only (not for config files): `/etc/agentskills/`
+  (`paths.AgentSkillsDir`, `YOKE_AGENTSKILLS_DIR`) — a `/etc/yoke/registry`-shaped
+  root (`agents/` + `skills/` subdirs) shared with other Agent-Skills tools. See
+  the "Shared Agent-Skills registry" note above.
 
   Override the chain via `YOKE_CONFIG_DIRS` (colon-separated; replaces
   the chain wholesale).
@@ -792,6 +813,7 @@ Two roots, resolved by [internal/paths/paths.go](internal/paths/paths.go):
 | `YOKE_HOME` | Per-user state root for all mutable files (default `$HOME/.yoke`) |
 | `YOKE_CONFIG_DIRS` | Colon-separated config search chain, high→low precedence. Replaces the default `.agents:$YOKE_HOME:/etc/yoke` |
 | `YOKE_SYSTEM_CONFIG_DIR` | Overrides **only** the system layer (`paths.SystemConfigDir`, default `/etc/yoke`), leaving `.agents` and `$HOME/.yoke` in the chain — unlike `YOKE_CONFIG_DIRS` which replaces the whole chain. Used by non-FHS package wrappers (Homebrew formula → `$(brew --prefix)/share/yoke`; Windows MSI → `C:\ProgramData\Yoke`; pip wheel launcher → the bundled `_dist/sysconf`) to relocate bundled config/registry without a rebuild |
+| `YOKE_AGENTSKILLS_DIR` | Relocates (or, set empty, **disables**) the shared Agent-Skills registry layer (`paths.AgentSkillsDir`, default `/etc/agentskills`) — a lowest-precedence, registry-only `/etc/yoke/registry`-shaped root (`agents/` + `skills/` subdirs) appended below `/etc/yoke` in the agent/skill search chains |
 | `YOKE_CONFIG_PATH` | Explicit `agents.json` path; bypasses the chain |
 | `YOKE_SKILLS_REGISTRY_DIR` | Where the web UI installs imported skills (default `$YOKE_HOME/registry/skills`) |
 | `YOKE_AGENTS_REGISTRY_DIR` | Where the web UI installs imported agents (default `$YOKE_HOME/registry/agents`) |

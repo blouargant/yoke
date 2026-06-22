@@ -20,6 +20,14 @@
 //     Agent/skill registries live under `registry/agents` and
 //     `registry/skills` in every layer.
 //
+//     One extra, registry-only layer sits BELOW all of the above in the
+//     agent/skill search chains (but not in ConfigSearchDirs, which is for
+//     config files): AgentSkillsDir (/etc/agentskills by default). When that
+//     directory exists it is treated like a /etc/yoke/registry root — its
+//     `agents/` and `skills/` subdirectories contribute definitions — letting
+//     yoke share an Agent-Skills registry installed by other tools. yoke's own
+//     /etc/yoke registry wins on name conflicts; see agentSkillsDir().
+//
 //     The whole chain can be replaced via $YOKE_CONFIG_DIRS (a list using
 //     the OS path-list separator, ":" on Unix). FindConfig returns the
 //     first existing file in the chain, falling back to the write target
@@ -48,6 +56,11 @@ const (
 	// FHS /etc/yoke location use this: the Homebrew formula points it at
 	// "$(brew --prefix)/etc/yoke" and the Windows MSI at "C:\ProgramData\Yoke".
 	envSystemConfigDir = "YOKE_SYSTEM_CONFIG_DIR"
+
+	// envAgentSkillsDir overrides the location of the shared, lowest-precedence
+	// Agent-Skills registry (AgentSkillsDir, default /etc/agentskills). Set it
+	// to an empty value to disable the layer entirely.
+	envAgentSkillsDir = "YOKE_AGENTSKILLS_DIR"
 
 	// LocalDir is the canonical project-local configuration directory
 	// (CWD-relative). Place agents.json, permissions.json, registry/agents/,
@@ -89,6 +102,27 @@ func systemConfigDir() string {
 // AGENT.md resolver) can locate system-layer files without duplicating the
 // override logic.
 func SystemDir() string { return systemConfigDir() }
+
+// AgentSkillsDir is an additional, lowest-precedence registry root shared with
+// other Agent-Skills-aware tools. When this directory exists it is treated like
+// /etc/yoke/registry — its agents/ and skills/ subdirectories contribute agent
+// and skill definitions to the search chains — but it sits BELOW the /etc/yoke
+// system layer, so yoke's own registry wins on name conflicts. It is never
+// written to (yoke forks edited items into the user layer, like /etc/yoke).
+// Package-level var so distribution packagers can relocate it via -ldflags;
+// for runtime overrides use the YOKE_AGENTSKILLS_DIR env var (set it empty to
+// disable the layer) via agentSkillsDir().
+var AgentSkillsDir = "/etc/agentskills"
+
+// agentSkillsDir returns the effective shared Agent-Skills registry root: the
+// YOKE_AGENTSKILLS_DIR env override when set (including an explicit empty value,
+// which disables the layer), otherwise the AgentSkillsDir package variable.
+func agentSkillsDir() string {
+	if v, ok := os.LookupEnv(envAgentSkillsDir); ok {
+		return strings.TrimSpace(v)
+	}
+	return AgentSkillsDir
+}
 
 // LocalDirNames returns the candidate local-dir names in precedence order.
 // `.agents/` (canonical) comes before `agents/` (alias).
@@ -269,6 +303,9 @@ func SkillsAllSearchDirs() []string {
 	if sys := systemConfigDir(); sys != "" {
 		out = append(out, filepath.Join(sys, "registry/skills"))
 	}
+	if as := agentSkillsDir(); as != "" {
+		out = append(out, filepath.Join(as, "skills"))
+	}
 	return out
 }
 
@@ -331,6 +368,9 @@ func skillsRegistrySearchDirs() []string {
 	if sys := systemConfigDir(); sys != "" {
 		out = append(out, filepath.Join(sys, "registry/skills"))
 	}
+	if as := agentSkillsDir(); as != "" {
+		out = append(out, filepath.Join(as, "skills"))
+	}
 	return out
 }
 
@@ -372,6 +412,9 @@ func agentsRegistrySearchDirs() []string {
 	out = append(out, filepath.Join(Home(), "registry/agents"))
 	if sys := systemConfigDir(); sys != "" {
 		out = append(out, filepath.Join(sys, "registry/agents"))
+	}
+	if as := agentSkillsDir(); as != "" {
+		out = append(out, filepath.Join(as, "agents"))
 	}
 	return out
 }

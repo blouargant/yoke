@@ -151,6 +151,7 @@ func TestStateDirsUnderHome(t *testing.T) {
 func TestAgentsRegistrySearchDirs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("YOKE_HOME", home)
+	t.Setenv("YOKE_AGENTSKILLS_DIR", "")
 	// Run from a clean CWD so the project's own .agents/ directory doesn't
 	// participate in the chain.
 	chdirTemp(t)
@@ -167,6 +168,75 @@ func TestAgentsRegistrySearchDirs(t *testing.T) {
 	wantSystem := filepath.Join(SystemConfigDir, "registry/agents")
 	if dirs[2] != wantSystem {
 		t.Errorf("third layer = %q, want %q", dirs[2], wantSystem)
+	}
+}
+
+// TestAgentSkillsRegistryLayer verifies that the shared /etc/agentskills
+// registry is appended as the lowest-precedence layer of both the agent and
+// skill search chains, with its agents/ and skills/ subdirs (no registry/
+// prefix), and that it can be relocated via YOKE_AGENTSKILLS_DIR.
+func TestAgentSkillsRegistryLayer(t *testing.T) {
+	home := t.TempDir()
+	extra := t.TempDir()
+	t.Setenv("YOKE_HOME", home)
+	t.Setenv("YOKE_AGENTSKILLS_DIR", extra)
+	chdirTemp(t)
+
+	agents := AgentsRegistrySearchDirs()
+	if len(agents) != 4 {
+		t.Fatalf("AgentsRegistrySearchDirs() len = %d, want 4: %v", len(agents), agents)
+	}
+	if last := agents[3]; last != filepath.Join(extra, "agents") {
+		t.Errorf("agents last layer = %q, want %q", last, filepath.Join(extra, "agents"))
+	}
+	// It must sit below /etc/yoke.
+	if agents[2] != filepath.Join(SystemConfigDir, "registry/agents") {
+		t.Errorf("agents system layer = %q, want %q", agents[2], filepath.Join(SystemConfigDir, "registry/agents"))
+	}
+
+	skills := SkillsAllSearchDirs()
+	if last := skills[len(skills)-1]; last != filepath.Join(extra, "skills") {
+		t.Errorf("skills last layer = %q, want %q", last, filepath.Join(extra, "skills"))
+	}
+}
+
+// TestAgentSkillsRegistryDisabled verifies that an explicit empty
+// YOKE_AGENTSKILLS_DIR removes the layer entirely, leaving /etc/yoke as the
+// lowest-precedence registry.
+func TestAgentSkillsRegistryDisabled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("YOKE_HOME", home)
+	t.Setenv("YOKE_AGENTSKILLS_DIR", "")
+	chdirTemp(t)
+
+	agents := AgentsRegistrySearchDirs()
+	if len(agents) != 3 {
+		t.Fatalf("AgentsRegistrySearchDirs() len = %d, want 3 when disabled: %v", len(agents), agents)
+	}
+	if last := agents[2]; last != filepath.Join(SystemConfigDir, "registry/agents") {
+		t.Errorf("agents last layer = %q, want %q (no agentskills)", last, filepath.Join(SystemConfigDir, "registry/agents"))
+	}
+	skills := SkillsAllSearchDirs()
+	if last := skills[len(skills)-1]; last != filepath.Join(SystemConfigDir, "registry/skills") {
+		t.Errorf("skills last layer = %q, want %q (no agentskills)", last, filepath.Join(SystemConfigDir, "registry/skills"))
+	}
+}
+
+// TestAgentSkillsRegistryDefault verifies the built-in default path is used
+// when no override is set.
+func TestAgentSkillsRegistryDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("YOKE_HOME", home)
+	os.Unsetenv("YOKE_AGENTSKILLS_DIR")
+	chdirTemp(t)
+
+	agents := AgentsRegistrySearchDirs()
+	if last := agents[len(agents)-1]; last != filepath.Join(AgentSkillsDir, "agents") {
+		t.Errorf("default agents last layer = %q, want %q", last, filepath.Join(AgentSkillsDir, "agents"))
+	}
+	skills := SkillsAllSearchDirs()
+	if last := skills[len(skills)-1]; last != filepath.Join(AgentSkillsDir, "skills") {
+		t.Errorf("default skills last layer = %q, want %q", last, filepath.Join(AgentSkillsDir, "skills"))
 	}
 }
 
