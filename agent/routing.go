@@ -56,13 +56,38 @@ type RouteDirective struct {
 // transient — Set by a tool during a turn and Taken (read+cleared) by the
 // dispatch loop immediately after that turn's runner finishes.
 type RouteRegistry struct {
-	mu sync.Mutex
-	m  map[string]*RouteDirective
+	mu     sync.Mutex
+	m      map[string]*RouteDirective
+	probes map[string]int // per-turn ask_squad probe counter, keyed by session
 }
 
 // NewRouteRegistry returns an empty registry.
 func NewRouteRegistry() *RouteRegistry {
-	return &RouteRegistry{m: map[string]*RouteDirective{}}
+	return &RouteRegistry{m: map[string]*RouteDirective{}, probes: map[string]int{}}
+}
+
+// IncProbe increments and returns the ask_squad probe count for sessionID. The
+// dispatch loop resets it (ResetProbes) at the start of each user turn, so the
+// count bounds probes within a single turn — a backstop against a router that
+// keeps probing squads without ever committing to a route.
+func (r *RouteRegistry) IncProbe(sessionID string) int {
+	if r == nil || sessionID == "" {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.probes[sessionID]++
+	return r.probes[sessionID]
+}
+
+// ResetProbes clears the per-turn ask_squad probe counter for sessionID.
+func (r *RouteRegistry) ResetProbes(sessionID string) {
+	if r == nil || sessionID == "" {
+		return
+	}
+	r.mu.Lock()
+	delete(r.probes, sessionID)
+	r.mu.Unlock()
 }
 
 // Set records the pending directive for sessionID, replacing any previous one.
@@ -142,6 +167,17 @@ func routeToSquadTool(reg *RouteRegistry, validTargets []string) tool.Tool {
 			Target: target,
 			Reason: strings.TrimSpace(in.Reason),
 		})
+		// The router's job is done the instant it records a route — the chosen
+		// squad answers the user, not the router. End the run here so the ADK
+		// flow loop (which otherwise only stops when the model voluntarily
+		// returns a tool-call-free response) cannot keep spinning: without this,
+		// an unlucky router sample narrates or re-calls tools after routing and
+		// the hop never terminates ("working… (Ns)" forever). SkipSummarization
+		// makes this function-response event final (session.Event.IsFinalResponse),
+		// terminating the loop immediately after the call. This is the host-side
+		// guarantee the instruction ("emit nothing, just route and stop") cannot
+		// give on its own.
+		ctx.Actions().SkipSummarization = true
 		return routeOut{Result: "Routed to the " + target + " squad; it will take over and answer the user's original message directly."}, nil
 	})
 	if err != nil {
@@ -173,6 +209,11 @@ func handoffToRouterTool(reg *RouteRegistry) tool.Tool {
 			Kind:   routeKindHandoff,
 			Reason: strings.TrimSpace(in.Reason),
 		})
+		// As with route_to_squad: once the squad decides to hand control back
+		// there is nothing more for it to do, so end the run here rather than
+		// letting the ADK loop give the model another (potentially looping)
+		// turn. See the note in routeToSquadTool.
+		ctx.Actions().SkipSummarization = true
 		return handoffOut{Result: "Control handed back to the router; it will re-route the user's original message."}, nil
 	})
 	if err != nil {
@@ -197,12 +238,17 @@ type askSquadOut struct {
 // the target squad's lead as a single isolated LLM call (the lead's own model +
 // instruction, NO tools/sub-agents/event-bus) and returns that lead's yes/no
 // verdict. validTargets is the same non-router squad list route_to_squad uses.
-func askSquadTool(runtime RuntimeSettings, validTargets []string) tool.Tool {
+func askSquadTool(reg *RouteRegistry, runtime RuntimeSettings, validTargets []string) tool.Tool {
 	valid := make(map[string]bool, len(validTargets))
 	for _, t := range validTargets {
 		valid[lowerTrim(t)] = true
 	}
 	list := strings.Join(validTargets, ", ")
+	// Bound probes per turn so a router that keeps probing without committing
+	// cannot spin the (uncapped) ADK flow loop. One probe per squad plus a small
+	// slack is generous — beyond it, the router must decide. The dispatch loop
+	// resets the counter at the start of each user turn.
+	maxProbes := len(validTargets) + 2
 	t, err := functiontool.New(functiontool.Config{
 		Name: "ask_squad",
 		Description: "Privately ask a squad's lead whether a request is within its scope, BEFORE you " +
@@ -214,6 +260,13 @@ func askSquadTool(runtime RuntimeSettings, validTargets []string) tool.Tool {
 		target := lowerTrim(in.Squad)
 		if target == "" || !valid[target] {
 			return askSquadOut{}, fmt.Errorf("unknown squad %q; choose exactly one of: %s", in.Squad, list)
+		}
+		if reg.IncProbe(ctx.SessionID()) > maxProbes {
+			// Probe budget for this turn is spent — stop probing and decide. The
+			// router must now either route_to_squad (which ends the run) or reply
+			// to the user, so this nudge bounds the otherwise-uncapped probe loop.
+			return askSquadOut{}, fmt.Errorf("probe limit reached for this turn — stop probing and decide now: " +
+				"call route_to_squad for the best-fit squad, or ask the user which kind of help they need")
 		}
 		can, reason, err := probeSquadCapability(ctx, runtime, target, strings.TrimSpace(in.Request))
 		if err != nil {
@@ -552,8 +605,10 @@ func (m *Manager) RunWithRouting(
 	}
 
 	reg := m.infra.RouteDirectives
-	// Discard any stale directive from a previous (e.g. aborted) turn.
+	// Discard any stale directive from a previous (e.g. aborted) turn, and reset
+	// the per-turn ask_squad probe budget.
 	reg.Take(sessionID)
+	reg.ResetProbes(sessionID)
 
 	var full strings.Builder
 	// Squads that handed this turn's request back to the router as out of scope,

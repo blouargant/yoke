@@ -494,7 +494,11 @@ func newEngine(d serverDeps) *gin.Engine {
 			case <-ctx.Done():
 				return
 			case msg := <-pushCh:
-				data, _ := json.Marshal(map[string]any{"session_id": msg.SID})
+				payload := map[string]any{"session_id": msg.SID}
+				if msg.Text != "" {
+					payload["text"] = msg.Text
+				}
+				data, _ := json.Marshal(payload)
 				_, _ = fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", msg.Event, data)
 				flush()
 			case be := <-busCh:

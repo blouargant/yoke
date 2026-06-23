@@ -41,6 +41,37 @@ func TestRouteRegistrySetTake(t *testing.T) {
 	}
 }
 
+func TestRouteRegistryProbeCounter(t *testing.T) {
+	// IncProbe bounds ask_squad probes within a turn; ResetProbes clears the
+	// budget at the start of each turn. This backstops the (uncapped) ADK flow
+	// loop against a router that keeps probing without committing.
+	r := NewRouteRegistry()
+	for want := 1; want <= 3; want++ {
+		if got := r.IncProbe("s"); got != want {
+			t.Fatalf("IncProbe #%d = %d, want %d", want, got, want)
+		}
+	}
+	// A different session keeps its own count.
+	if got := r.IncProbe("other"); got != 1 {
+		t.Fatalf("IncProbe other = %d, want 1 (per-session)", got)
+	}
+	r.ResetProbes("s")
+	if got := r.IncProbe("s"); got != 1 {
+		t.Fatalf("IncProbe after reset = %d, want 1", got)
+	}
+	if got := r.IncProbe("other"); got != 2 {
+		t.Fatalf("ResetProbes leaked across sessions: other = %d, want 2", got)
+	}
+	// Nil-safe and empty-session-safe (matches the rest of the registry API).
+	var nilReg *RouteRegistry
+	if got := nilReg.IncProbe("s"); got != 0 {
+		t.Fatalf("nil IncProbe = %d, want 0", got)
+	}
+	if got := r.IncProbe(""); got != 0 {
+		t.Fatalf("empty-session IncProbe = %d, want 0", got)
+	}
+}
+
 func TestRouteRegistryPeek(t *testing.T) {
 	// Peek must report a pending directive WITHOUT clearing it — surfaces rely on
 	// it to decide whether a router hop's text was a route (discard) before the

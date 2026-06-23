@@ -54,6 +54,9 @@ func (g *sessionRunGuard) tryAcquire(sessionID string) (release func(), ok bool)
 type pushMsg struct {
 	Event string
 	SID   string
+	// Text carries an optional payload (e.g. a short reply preview for the
+	// chat_reply event); empty for events that only need the session id.
+	Text string
 }
 
 // sessionPushBroadcaster holds per-session channels that fire whenever a
@@ -132,10 +135,18 @@ func (b *sessionPushBroadcaster) notify(sessionID string) {
 // session-list changes (created/deleted/renamed); the per-session subs are
 // untouched because they only understand mailbox_push.
 func (b *sessionPushBroadcaster) broadcast(event, sessionID string) {
+	b.broadcastWithText(event, sessionID, "")
+}
+
+// broadcastWithText is broadcast plus an optional text payload (carried on
+// pushMsg.Text and serialised as the SSE data field's "text"). Used by
+// chat_reply to ship a short reply preview to every open browser so an
+// OS notification can show the first lines of the answer.
+func (b *sessionPushBroadcaster) broadcastWithText(event, sessionID, text string) {
 	b.mu.RLock()
 	for ch := range b.all {
 		select {
-		case ch <- pushMsg{Event: event, SID: sessionID}:
+		case ch <- pushMsg{Event: event, SID: sessionID, Text: text}:
 		default:
 		}
 	}

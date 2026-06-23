@@ -191,6 +191,17 @@ The whole mechanism is **host-side and config-driven** ([agent/routing.go](agent
   (`RouteDirectives`); they never run another runner themselves. Note they carry
   **no `prompt`** — the squad always receives the user's verbatim message (see
   dispatch loop), so the router cannot paraphrase or twist the request.
+  **Both tools end the run the instant they record a directive** by setting
+  `ctx.Actions().SkipSummarization = true`, which makes their function-response
+  event `IsFinalResponse()` (ADK `session.Event`) — terminating the agent flow
+  loop immediately. This is a **host-side guarantee**, not an instruction the
+  router may ignore: the ADK LLM flow loop ([internal/llminternal/base_flow.go](file:///home/bertrand/go/pkg/mod/google.golang.org/adk@v1.2.0/internal/llminternal/base_flow.go)
+  `Flow.Run`) has **no iteration cap** and only stops when the model returns a
+  tool-call-free response, and the directive is consumed by the dispatch loop
+  only *after* `Runner.Run` returns — so without this, an unlucky router sample
+  that narrates or re-calls tools after routing would spin the hop forever
+  ("working… (Ns)" with no reply, the reported bug). `ask_squad` does **not**
+  set it (the router must act on the verdict).
 - **Capability probe (`ask_squad`)** — also router-only. When the router is
   *unsure* which squad fits, it privately checks a candidate before committing:
   `ask_squad(squad, request)` ([agent/routing.go](agent/routing.go)
@@ -205,7 +216,12 @@ The whole mechanism is **host-side and config-driven** ([agent/routing.go](agent
   (only `route_to_squad` does). The router probes the next candidate on a
   decline and, when all plausible squads decline, asks the user instead of
   force-routing. It's a *scope judgment only* — the probed squad never runs its
-  tools. Confident routes skip the probe entirely. The router's own routing/probe
+  tools. Confident routes skip the probe entirely. **Probes are capped per turn**
+  (`RouteRegistry.IncProbe`/`ResetProbes`, limit `len(squads)+2`, reset at the
+  start of each `RunWithRouting` turn): over budget, `ask_squad` returns an error
+  nudging the router to decide now — a defense-in-depth backstop (alongside the
+  `SkipSummarization` termination above and `routerMaxHops`) against a router
+  that keeps probing without committing. The router's own routing/probe
   tool-call frames (`route_to_squad`/`handoff_to_router`/`ask_squad`) are
   suppressed in the web UI by `isRoutingTool` ([web/app.js](web/app.js), mirroring
   the `isTodoTool` special-case) so the negotiation stays hidden — the `routing`
@@ -931,6 +947,35 @@ collapse state in `localStorage`), and the TUI `archivedPane` in the left column
 the highlighted session, `u` unarchives, `d` deletes). Viewing an archived session
 disables the composer in both surfaces.
 
+### Automatic session titling (Web UI)
+
+A brand-new chat starts with a petname id (e.g. `teaching-kite`); on its **first
+user turn** the server auto-derives a topic-bearing `Title` from the prompt, so
+the sidebar/tab label stops reading as a random petname without a manual rename.
+**Hybrid, two-tier** ([agent/session_title.go](agent/session_title.go),
+hooked in [server/sse.go](server/sse.go) `handleMessages`):
+
+- **Instant heuristic** — `agent.HeuristicTitle(prompt)` strips fenced code,
+  collapses whitespace, and truncates to ≤60 chars on a word boundary (pure, no
+  model call). Applied synchronously at turn start, then a `session_renamed`
+  broadcast updates every open browser.
+- **Async LLM refinement** — a background goroutine calls
+  `Manager.GenerateTitle(ctx, sessionID, prompt)`, which issues **one
+  non-streamed completion on the session's leader model** (the same one-off-LLM
+  pattern as the routing capability probe in [agent/routing.go](agent/routing.go)
+  — no runner/tools/event bus, so nothing reaches the SSE stream), 30 s timeout
+  on `rootCtx`. When it returns a different title it overwrites the heuristic and
+  re-broadcasts; any failure silently keeps the heuristic.
+
+Gated to `meta.Title == "" && meta.Turns == 0` (read before the producer
+goroutine's `Touch` increments the counter, under the run-guard), so a
+**manually-renamed** session and a **continued** one are never re-titled, and an
+attachment-only first turn (empty heuristic) keeps the petname. Writes go through
+the existing `Registry.SetTitle` (in-memory) + `sessions.SetConversationTitle`
+(persisted via the conversation lock, so they serialise with the turn's own
+persistence). CLI/TUI are untouched (titling is server-only). **No-op contract:**
+nothing changes for sessions that already have a title or have prior turns.
+
 ### Project memory (`AGENT.md`), `/init`, and `#`
 
 Yoke's equivalent of Claude Code's `CLAUDE.md`. `AGENT.md` files are discovered,
@@ -1431,8 +1476,38 @@ reply** while the user is away (`notifyChatReply`). Both live in
 `document.hidden || !document.hasFocus()` for tasks; for chat replies that **plus**
 `panelsForSession(sessionId).length === 0` (the finished session isn't the active
 tab in any visible pane, i.e. the user switched to another session). `notifyChatReply`
-is called from the send-path `finally` on `outcome === "done" || "reload"` (a real
-reply landed; `stopped`/`error`/`exhausted` don't ping).
+is called from **two** places: the send-path `finally` on `outcome === "done" ||
+"reload"` (the initiating tab, immediate, rich live preview), **and** the
+persistent `/api/events` global stream's **`chat_reply`** event (robust to a
+backgrounded tab whose per-turn POST/SSE stream the browser suspended — the same
+reliable channel `task_notification` uses, and the reason chat notifications fire
+even when the sending tab is in the background). The notification's **title is the
+session/chat name** (`paneTabTitle`) and its **body is the first few lines of the
+reply** as a **multi-line** snippet — `notificationPreview` strips markdown and
+keeps ≤4 non-empty lines joined with `\n` (length-capped), so the OS renders a
+multi-line notification rather than one collapsed line. (The browser still appends
+its own immutable origin source line below — web code cannot rename or suppress
+it.) The two calls are **de-duplicated** so only **one** notification fires per
+completed turn: the send-path fires first (the `done` SSE is emitted *before* the
+server persists + broadcasts `chat_reply`) and carries the **final-answer** text
+(`lastReplyText` = the last finalized segment, since a `tool_call` finalizes the
+current segment), so it wins; the global `chat_reply` — which previews the **full**
+turn text, whose first lines may be the leader's "handing off to `<sub-agent>`"
+narration — is suppressed for that turn. The guard is an 8 s per-session window in
+`sessionNotifiedAt` (sessionId → last-fired ms; cleared in `forgetSession`); the
+shared `tag` (`yoke-chat-<sessionId>`) is a second-line coalesce. The global path
+remains the fallback when the initiating tab was backgrounded and its send-path
+`finally` didn't fire promptly. The away-check makes both no-ops when the user is
+present. `stopped`/`error`/`exhausted` don't ping. `notifyTaskEvent` mirrors the
+title (session name) convention.
+
+The `chat_reply` event is broadcast server-side from the turn producer in
+[server/sse.go](server/sse.go) `handleMessages` after the reply is persisted
+(`d.PushEvents.broadcastWithText("chat_reply", id, replyNotificationPreview(text))`);
+`replyNotificationPreview` is the server-side markdown→snippet reducer mirroring
+the client's (also multi-line: ≤4 lines joined with `\n`). `pushMsg` carries an optional `Text` payload
+([server/mailbox_push.go](server/mailbox_push.go) `broadcastWithText`), serialised
+as the SSE data field's `text` ([server/server.go](server/server.go) `/api/events`).
 
 - **Source of truth.** The durable choice is the server-side **`preferences.json`**
   ([server/preferences.go](server/preferences.go), `preferences.Notifications *bool`,
@@ -1444,9 +1519,21 @@ reply landed; `stopped`/`error`/`exhausted` don't ping).
   the server prefs on boot and `saveNotifications(enabled)` writes both.
 - **First-run opt-in.** When `preferences.json` has **no** `notifications` value
   (pointer is nil ⇒ omitted from JSON), `maybePromptNotifications` (run once at the
-  end of `init()`, awaiting `window.Settings.prefsReady`) shows a `uiConfirm` opt-in,
-  requests browser permission, and persists the answer — so it's asked **once per
-  home directory**, never again. The Settings → Appearance toggle changes it later.
+  end of `init()`, awaiting `window.Settings.prefsReady`) shows a `uiConfirm` opt-in
+  (via the shared `offerNotificationGrant` helper — the confirm click is also the
+  user gesture the native permission prompt needs), requests browser permission, and
+  persists the answer — so it's asked **once per home directory**, never again. The
+  Settings → Appearance toggle changes it later.
+- **Boot-time intent⇄grant reconciliation.** The server-side intent and the
+  per-browser `Notification.permission` are independent: clearing a site's data /
+  permissions resets the browser grant to `"default"` (or it may be `"denied"`)
+  while `preferences.json` still says **enabled** — leaving yoke "on" while the
+  browser silently drops every notification, with no message explaining why. So when
+  a recorded intent is `true` but the permission is **not** `granted`,
+  `maybePromptNotifications` reconciles at startup: `"default"` ⇒ re-offer the grant
+  (`offerNotificationGrant`), `"denied"` ⇒ show `showNotificationBlockedHelp`. Guarded
+  by a once-per-tab-session `sessionStorage["agent_toolkit_notify_resynced"]` flag so
+  a dismissed re-offer or a hard block never re-prompts on every navigation.
 - **Permission is per-browser; intent is per-user.** The file records intent; the
   browser still owns the grant, so a second browser may need permission re-granted
   (via the Settings toggle). A website **cannot** grant its own notification
@@ -1469,9 +1556,11 @@ carries, besides `mailbox_push` / `ask_user` / `ask_user_cancel`, three
 `session_created`, `session_deleted`, and `session_renamed`. Each is emitted by
 `sessionPushBroadcaster.broadcast(event, sid)` ([server/mailbox_push.go](server/mailbox_push.go))
 from the `POST /sessions`, `DELETE /sessions/:id`, and `PATCH /sessions/:id`
-handlers respectively. The multiplexed `all` channel carries a `pushMsg{Event,SID}`
-(the legacy per-session `subs` channel still only understands `mailbox_push`, so
-`notify` fans out to both while `broadcast` touches only `all`). The client
+handlers respectively. The multiplexed `all` channel carries a
+`pushMsg{Event,SID,Text}` (Text is an optional payload, e.g. the `chat_reply`
+reply preview — see "Desktop notifications"; the legacy per-session `subs` channel
+still only understands `mailbox_push`, so `notify` fans out to both while
+`broadcast`/`broadcastWithText` touch only `all`). The client
 handles `session_created`/`session_renamed` with a sidebar-only `loadSessions()`
 and `session_deleted` with `forgetSession(sid)` (drops per-session maps + ask
 widgets + `closeTabEverywhere`) then `loadSessions()`. All three handlers are
@@ -1479,7 +1568,10 @@ idempotent, so the originating browser harmlessly processes its own echoed
 broadcast. New sessions are **never auto-opened** on other browsers — only listed.
 A fourth event, **`session_rewound`**, is emitted by the rewind handler (see
 "Conversation fork & rewind" below); the client re-renders the truncated
-transcript from history for any pane showing that session.
+transcript from history for any pane showing that session. A fifth event,
+**`chat_reply`** (carrying the session id + a reply-preview `text`), fires on every
+completed user turn and drives away-from-session OS notifications (see "Desktop
+notifications"); it does not change the transcript.
 
 ### Conversation fork & rewind (Web UI)
 

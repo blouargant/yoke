@@ -101,6 +101,38 @@ func handleMessages(d serverDeps) gin.HandlerFunc {
 		// so it reaches the agent's file tools and any sub-agents.
 		cwd := bashCwd.get(meta.ID)
 
+		// Auto-title a brand-new session from its first user prompt (hybrid:
+		// instant heuristic now, async LLM refinement). Skipped for a
+		// manually-renamed session (Title already set) and for a continued one
+		// (Turns > 0) — both checks read meta before the producer goroutine's
+		// Touch increments the counter, and we hold the run-guard so no other
+		// turn can race it. An attachment-only first turn (empty heuristic) keeps
+		// the petname.
+		if strings.TrimSpace(meta.Title) == "" && meta.Turns == 0 {
+			if heur := toolkitagent.HeuristicTitle(req.Prompt); heur != "" {
+				d.Registry.SetTitle(meta.ID, heur)
+				_ = sessions.SetConversationTitle(meta.ID, heur)
+				if d.PushEvents != nil {
+					d.PushEvents.broadcast("session_renamed", meta.ID)
+				}
+				// Refine asynchronously with one off-stream LLM call; keep the
+				// heuristic title when it fails or doesn't change anything. Title
+				// writes serialise on the conversation lock, so this is safe to
+				// run alongside the turn's own persistence.
+				go func(prompt, heur string) {
+					tctx, cancel := context.WithTimeout(d.rootCtx, 30*time.Second)
+					defer cancel()
+					if t, ok := d.Manager.GenerateTitle(tctx, meta.ID, prompt); ok && t != heur {
+						d.Registry.SetTitle(meta.ID, t)
+						_ = sessions.SetConversationTitle(meta.ID, t)
+						if d.PushEvents != nil {
+							d.PushEvents.broadcast("session_renamed", meta.ID)
+						}
+					}
+				}(req.Prompt, heur)
+			}
+		}
+
 		parts := []*genai.Part{{Text: req.Prompt}}
 		var toolPaths []string
 		for _, fp := range req.Files {
@@ -269,6 +301,14 @@ func handleMessages(d serverDeps) gin.HandlerFunc {
 			if strings.TrimSpace(assistantText) != "" {
 				if err := sessions.AppendConversationTurnFull(meta.ID, req.Prompt, assistantText, usageAccum, turnDur.Milliseconds()); err != nil {
 					log.Printf("server: failed to persist turn: %v", err)
+				}
+				// Announce the completed reply on the persistent /api/events stream so
+				// any browser that is away from this session can raise an OS
+				// notification — robust to a backgrounded tab whose per-turn stream the
+				// browser suspended (the same reliable channel background-task
+				// notifications use). Carries a short preview of the answer.
+				if d.PushEvents != nil {
+					d.PushEvents.broadcastWithText("chat_reply", meta.ID, replyNotificationPreview(assistantText))
 				}
 			}
 			lt.finish()
@@ -762,4 +802,45 @@ func streamEvents(
 			}
 		}
 	}
+}
+
+// replyNotificationPreview reduces an assistant reply to a short, plain-text
+// snippet suitable for an OS-notification body: the first few non-empty lines
+// with the most common leading markdown markers stripped, kept AS SEPARATE
+// LINES (joined with "\n" so the OS renders a multi-line notification) and the
+// whole thing length-capped. The browser applies a further inline-markdown
+// cleanup (see notificationPreview in web/app.js).
+func replyNotificationPreview(text string) string {
+	const (
+		maxLines = 4
+		maxRunes = 220
+	)
+	var lines []string
+	inFence := false
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence || line == "" {
+			continue
+		}
+		// Strip leading heading (#) and blockquote (>) markers.
+		line = strings.TrimLeft(line, "#> \t")
+		// Normalise an unordered-list bullet.
+		if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") || strings.HasPrefix(line, "+ ") {
+			line = "• " + strings.TrimSpace(line[2:])
+		}
+		// Collapse internal runs of whitespace within the line.
+		lines = append(lines, strings.Join(strings.Fields(line), " "))
+		if len(lines) >= maxLines {
+			break
+		}
+	}
+	out := strings.Join(lines, "\n")
+	if r := []rune(out); len(r) > maxRunes {
+		out = strings.TrimSpace(string(r[:maxRunes-1])) + "…"
+	}
+	return out
 }

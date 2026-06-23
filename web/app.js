@@ -890,6 +890,12 @@ const sessionAbortCtrls = new Map(); // sessionId → AbortController
 const sessionSending    = new Set(); // sessionIds currently streaming
 const sessionStopped    = new Set(); // sessionIds whose turn the user explicitly Stopped
 const sessionStatus     = new Map(); // sessionId → status string
+// sessionId → epoch ms a chat-reply OS notification last fired. A completed turn
+// has two notification sources — the send-path `finally` (fires first, with the
+// final-answer text) and the global `chat_reply` event (fires a moment later,
+// previewing the full turn text incl. any "handing off to <sub-agent>" narration).
+// This lets the first one win and suppress the redundant second for that turn.
+const sessionNotifiedAt = new Map();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const archivedSessions  = new Set(); // sessionIds in the archived (read-only) state
@@ -4339,6 +4345,7 @@ function forgetSession(id) {
   sessionAgentTokens.delete(id);
   sessionTodos.delete(id);
   sessionTodoBlock.delete(id);
+  sessionNotifiedAt.delete(id);
   composerDrafts.delete(id);
   // Remove any pending ask_user widgets belonging to this session from every
   // pane's slot, plus the queued/ pending maps.
@@ -4878,6 +4885,15 @@ async function subscribeGlobalEvents() {
           // in passive mode there is no new turn and the toast is the only signal.
           if (!sessionSending.has(sid)) await appendNewPushTurns(sid);
           notifyTaskEvent(sid);
+        } else if (event === "chat_reply" && sid) {
+          // A chat turn finished. This fires for EVERY completed reply on the
+          // persistent /api/events stream — the same robust channel as
+          // task_notification — so an OS notification still raises even when the
+          // initiating tab was backgrounded (and its per-turn stream suspended).
+          // notifyChatReply self-gates on the preference + the "user is away from
+          // this session" check, and the notification's tag coalesces with any
+          // duplicate the initiating tab's send path raised, so at most one shows.
+          notifyChatReply(sid, (data && data.text) || "");
         } else if (event === "ask_user" && data && typeof data === "object" && sid) {
           renderAskUserWidget(sid, data);
         } else if (event === "ask_user_cancel" && data && data.question_id) {
@@ -4936,7 +4952,7 @@ function notifyTaskEvent(sid) {
       away && "Notification" in window &&
       Notification.permission === "granted") {
     try {
-      const n = new Notification("Background task finished", {
+      const n = new Notification(paneTabTitle(sid), {
         body: "A background task or monitor reported a result.",
         tag: "yoke-task-" + sid,
       });
@@ -4949,7 +4965,7 @@ function notifyTaskEvent(sid) {
 // the user is NOT looking at that session — they switched to another session,
 // or the window is hidden / unfocused. Gated by the same unified preference as
 // notifyTaskEvent (localStorage cache, durable choice in the server prefs file).
-function notifyChatReply(sessionId) {
+function notifyChatReply(sessionId, replyText) {
   if (localStorage.getItem("agent_toolkit_os_notify") !== "1") return;
   if (!("Notification" in window) || Notification.permission !== "granted") return;
   // "Away" = the finished session is not the active tab in any visible pane
@@ -4957,13 +4973,53 @@ function notifyChatReply(sessionId) {
   const away = document.hidden || !document.hasFocus() ||
     panelsForSession(sessionId).length === 0;
   if (!away) return;
+  // De-dupe the two sources for one completed turn (send-path `finally` and the
+  // global `chat_reply` event). They fire within a moment of each other; the
+  // send-path runs first and carries the better final-answer text, so whichever
+  // fires first wins and the other is suppressed within a short window. Without
+  // this the user gets a second, redundant notification previewing the leader's
+  // "handing off to <sub-agent>" narration.
+  const now = Date.now();
+  if (now - (sessionNotifiedAt.get(sessionId) || 0) < 8000) return;
+  sessionNotifiedAt.set(sessionId, now);
   try {
-    const n = new Notification("Reply ready", {
-      body: `“${paneTabTitle(sessionId)}” finished responding.`,
+    // The chat/session name is the bold title; the first lines of the reply are
+    // the multi-line body, so the user gains some knowledge of the result
+    // without switching back. (The browser appends its own origin source line
+    // below — web code cannot rename or suppress it.)
+    const title = paneTabTitle(sessionId);
+    const preview = notificationPreview(replyText);
+    const n = new Notification(title, {
+      body: preview || "Finished responding.",
       tag: "yoke-chat-" + sessionId,
     });
     n.onclick = () => { window.focus(); selectSession(sessionId); n.close(); };
   } catch { /* ignore */ }
+}
+
+// notificationPreview turns a reply's raw markdown into a short, plain-text
+// snippet for an OS-notification body. It keeps the first few non-empty lines
+// (markdown markup stripped) AS SEPARATE LINES — joined with "\n" so the OS
+// renders a multi-line notification — and caps the total length.
+function notificationPreview(text, maxLines = 4, maxLen = 220) {
+  if (!text) return "";
+  const stripped = String(text)
+    .replace(/```[\s\S]*?```/g, " ")            // fenced code blocks
+    .replace(/`([^`]*)`/g, "$1")                // inline code
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")       // images
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")    // links → link text
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")         // ATX headings
+    .replace(/^\s*>\s?/gm, "")                  // blockquotes
+    .replace(/^\s*[-*+]\s+/gm, "• ")            // unordered list bullets
+    .replace(/[*_~]/g, "");                     // emphasis markers
+  const lines = stripped
+    .split("\n")
+    .map((s) => s.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, maxLines);
+  let out = lines.join("\n");
+  if (out.length > maxLen) out = out.slice(0, maxLen - 1).trimEnd() + "…";
+  return out;
 }
 
 // requestDesktopNotifications asks the browser for notification permission and
@@ -5007,34 +5063,74 @@ function showNotificationBlockedHelp() {
   });
 }
 
-// maybePromptNotifications runs once on first launch: when the server prefs hold
-// no recorded notification choice, it asks the user to opt in, requests browser
-// permission, and persists the answer to the server prefs file (so they're never
-// asked again — on any browser sharing that home directory). Settings →
-// Appearance lets them change it later.
+// offerNotificationGrant shows an opt-in confirm (whose click is also the user
+// gesture the native permission prompt needs), requests the browser permission,
+// and persists the outcome via save(). Shared by the first-run opt-in and the
+// boot-time reconciliation below.
+async function offerNotificationGrant({ title, message, confirmText }, save) {
+  const ok = await uiConfirm({ title, message, confirmText });
+  if (!ok) { save(false); return; }
+  const { before, after } = await requestDesktopNotifications();
+  if (after === "granted") { save(true); return; }
+  // User actively clicked "Block" in the just-shown native prompt → respect it.
+  if (before === "default" && after === "denied") { save(false); return; }
+  // They opted in but the browser is still blocking it (pre-denied, or the
+  // prompt was suppressed/dismissed). Record the intent so it fires the moment
+  // they unblock it, and show how — a website can't grant the permission.
+  save(true);
+  await showNotificationBlockedHelp();
+}
+
+// maybePromptNotifications runs once on launch and does two things:
+//   1. First run (no recorded choice) → ask the user to opt in.
+//   2. Reconcile a recorded "enabled" intent with the per-browser permission.
+//      The server-side intent and the browser's Notification permission are
+//      independent: clearing the site's data/permissions resets the browser
+//      grant to "default" (or it can be "denied") while yoke still believes
+//      notifications are on — so every notification silently no-ops with no
+//      message telling the user why. When that mismatch is detected we re-offer
+//      the grant at startup (once per tab session, so we don't nag).
+// The answer persists to the server prefs file (shared across browsers on the
+// same home dir); Settings → Appearance lets the user change it later.
 async function maybePromptNotifications() {
   try {
     const S = window.Settings;
     const prefs = await (S && S.prefsReady ? S.prefsReady : Promise.resolve(null));
     const save = (v) => (S && S.saveNotifications ? S.saveNotifications(v) : undefined);
-    // prefs unreachable, or a choice already recorded (true/false) → no prompt.
-    if (!prefs || typeof prefs.notifications === "boolean") return;
-    if (!("Notification" in window)) { save(false); return; }
-    const ok = await uiConfirm({
+    if (!prefs) return; // prefs unreachable
+    const supported = "Notification" in window;
+
+    // A choice was already recorded.
+    if (typeof prefs.notifications === "boolean") {
+      // Only the "enabled" intent can be out of sync with the browser; a
+      // disabled or unsupported state has nothing to reconcile.
+      if (!supported || prefs.notifications !== true) return;
+      if (Notification.permission === "granted") return; // intent ⇄ grant agree
+      // Reconcile at most once per tab session so a dismissed re-offer (or a
+      // hard browser block) doesn't re-prompt on every navigation.
+      if (sessionStorage.getItem("agent_toolkit_notify_resynced") === "1") return;
+      sessionStorage.setItem("agent_toolkit_notify_resynced", "1");
+      if (Notification.permission === "denied") {
+        // A site can't re-grant a hard block — just explain how to unblock it.
+        await showNotificationBlockedHelp();
+        return;
+      }
+      // permission === "default" (e.g. site data was cleared): re-offer the grant.
+      await offerNotificationGrant({
+        title: "Re-enable desktop notifications?",
+        message: "Notifications are turned on in Yoke, but your browser no longer has permission for this site (this happens when the site's data or permissions are cleared). Allow them again?",
+        confirmText: "Allow notifications",
+      }, save);
+      return;
+    }
+
+    // First run — no recorded choice yet.
+    if (!supported) { save(false); return; }
+    await offerNotificationGrant({
       title: "Enable desktop notifications?",
       message: "Get a desktop notification when a chat finishes replying while you're on another session or app — and when a background task completes. You can change this any time in Settings → Appearance.",
       confirmText: "Enable notifications",
-    });
-    if (!ok) { save(false); return; }
-    const { before, after } = await requestDesktopNotifications();
-    if (after === "granted") { save(true); return; }
-    // User actively clicked "Block" in the just-shown native prompt → respect it.
-    if (before === "default" && after === "denied") { save(false); return; }
-    // They opted in but the browser is still blocking it (pre-denied, or the
-    // prompt was suppressed/dismissed). Record the intent so it fires the moment
-    // they unblock it, and show how — a website can't grant the permission.
-    save(true);
-    await showNotificationBlockedHelp();
+    }, save);
   } catch (e) { console.error("notification opt-in failed:", e); }
 }
 
@@ -5242,6 +5338,7 @@ async function sendMessage(panel) {
   let segBubble = null;     // current assistant text element
   let segAcc = "";          // accumulated text for the current segment
   let segHadToken = false;  // whether we received streaming tokens this segment
+  let lastReplyText = "";   // last non-empty text segment — used as the OS-notification preview
 
   function ensureSegment() {
     if (!segBubble) {
@@ -5268,6 +5365,7 @@ async function sendMessage(panel) {
     if (!segBubble) return;
     if (segAcc) {
       streamMdFinalize(segBubble, segAcc);
+      lastReplyText = segAcc;
     } else {
       segBubble.remove();
     }
@@ -5616,7 +5714,7 @@ async function sendMessage(panel) {
     // A reply finished: ping the user if they navigated away (different session
     // or backgrounded window). "done"/"reload" mean a reply is ready; "stopped",
     // "error" and "exhausted" do not (the user was present, or there's no reply).
-    if (outcome === "done" || outcome === "reload") notifyChatReply(sessionId);
+    if (outcome === "done" || outcome === "reload") notifyChatReply(sessionId, lastReplyText);
     // Track turn count so appendNewPushTurns knows where to start. The history
     // re-render path already set it authoritatively, so skip the bump there.
     if (!skipTurnCount) sessionTurnCounts.set(sessionId, (sessionTurnCounts.get(sessionId) ?? 0) + 1);

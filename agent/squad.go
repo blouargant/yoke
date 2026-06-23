@@ -195,7 +195,7 @@ func buildSquadInstance(
 		// ask_squad lets the router privately check a candidate squad's scope
 		// (a hidden, tool-less LLM judgment by that squad's lead) before
 		// committing — used only when the router is unsure.
-		leadTools = append(leadTools, askSquadTool(runtime, targets))
+		leadTools = append(leadTools, askSquadTool(infra.RouteDirectives, runtime, targets))
 	} else if routingEnabled {
 		leadTools = append(leadTools, handoffToRouterTool(infra.RouteDirectives))
 	}
