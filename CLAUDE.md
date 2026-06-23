@@ -432,6 +432,7 @@ Resulting tags are applied to `_stats.json` via `Stats.RecordTag`.
 | `internal/mcp/` | MCP config loader (path resolved from search chain) |
 | `internal/a2a/` | A2A protocol client (`client.go`) + ADK tool wiring (`tools.go`); config types in `a2a.go` |
 | `internal/tui/` | tview chat UI (trace pane + streaming chat) |
+| `internal/selfupdate/` | In-app package auto-update: `DetectMethod` (deb/rpm/brew/msi/pip/raw, runtime detection of how the running binary was installed), `CheckLatest` (GitHub `/releases/latest`, stable-only, semver-gated), `Install` (per-method, `sudo -S` for deb/rpm), `ManualInstructions` fallback. Server-only; see "Self-update" |
 | `server/` | HTTP API server with Bearer token auth |
 | `server/a2a_server.go` | Receives inbound A2A `tasks/send` / `tasks/sendSubscribe` calls; routes by squad + session |
 
@@ -835,6 +836,8 @@ Two roots, resolved by [internal/paths/paths.go](internal/paths/paths.go):
 | `YOKE_AGENTS_REGISTRY_DIR` | Where the web UI installs imported agents (default `$YOKE_HOME/registry/agents`) |
 | `YOKE_DEBUG` | Log full conversation/event payloads + per-stream SSE timing line |
 | `YOKE_LLM_STREAM_STALL_TIMEOUT` | Max idle gap between streamed chunks before the LLM read is aborted (Go duration, default `10m`; `0` disables). Guards against an upstream/gateway that streams partial text then goes silent without `[DONE]` or closing — otherwise the turn freezes "mid sentence" until the 5-minute client timeout. Applies to both the OpenAI/compat and Anthropic adapters ([core/llm/stall.go](core/llm/stall.go)). |
+| `YOKE_UPDATE_CHECK` | `true`/`false` (default `true`) — server-mode self-update poller that checks GitHub for a newer stable release. Auto-off for `dev` builds (no real version to compare). See "Self-update". |
+| `YOKE_UPDATE_INTERVAL` | How often the self-update poller re-checks GitHub (Go duration, default `6h`; clamped to ≥ `1m`). |
 
 ### Permission nomenclature (Claude Code-style) + grant scopes
 
@@ -1571,7 +1574,61 @@ A fourth event, **`session_rewound`**, is emitted by the rewind handler (see
 transcript from history for any pane showing that session. A fifth event,
 **`chat_reply`** (carrying the session id + a reply-preview `text`), fires on every
 completed user turn and drives away-from-session OS notifications (see "Desktop
-notifications"); it does not change the transcript.
+notifications"); it does not change the transcript. A sixth event,
+**`update_available`** (no session id), is fired once by the self-update poller
+when a newer stable release is found; the client re-runs `checkForUpdate()` to
+reveal the sidebar button (see "Self-update").
+
+### Self-update (new-release detection + in-app install)
+
+The running **yoke-server** periodically checks GitHub for a newer **stable**
+release and surfaces a blue **Update** button next to the "Yoke" title in the
+sidebar header; clicking it installs the new package for the channel yoke was
+installed through, with a manual-steps fallback. Server-only (CLI/TUI never poll
+or install). The logic lives in [internal/selfupdate/](internal/selfupdate/) and
+the server wiring + routes in [server/selfupdate.go](server/selfupdate.go).
+
+- **Version awareness.** [server/main.go](server/main.go) now declares
+  `version`/`commit`/`date` ldflags vars (the Makefile/goreleaser already passed
+  `-X main.version` to `./server` — it was silently dropped before). A `dev`
+  version disables the check entirely (developers are never nagged).
+- **Detection.** `selfupdate.DetectMethod(os.Executable())` classifies the
+  install channel at runtime: pip (exe under `…/yoke/_dist/` or `site-packages/`),
+  brew (darwin, under `brew --prefix`/`/Cellar/yoke/`), deb (`dpkg-query -S`
+  succeeds), rpm (`rpm -qf` succeeds), msi (windows, under Program Files), else
+  `raw`/`unknown`.
+- **Check.** `CheckLatest(ctx, Repo, version)` GETs
+  `https://api.github.com/repos/blouargant/yoke/releases/latest` (the `/latest`
+  endpoint already excludes drafts/prereleases ⇒ stable only), `semverNewer`
+  gates availability (non-semver/`dev` current ⇒ never available), and `assetFor`
+  picks the matching `.deb`/`.rpm`/`.msi` asset by GOOS/GOARCH. brew/pip need no
+  asset (package-manager install). The result is cached in `updateState` on
+  `serverDeps`.
+- **Poller.** `startUpdatePoller` runs a goroutine (15 s after boot, then every
+  `YOKE_UPDATE_INTERVAL`, default `6h`, gated by `YOKE_UPDATE_CHECK`) that
+  re-checks and, the first time an update appears, fires the `update_available`
+  SSE via `PushEvents.broadcast` so open tabs light the button without polling.
+- **Routes** (auth group, registered in [server/server.go](server/server.go)):
+  `GET /api/update/status` (cached `{current, latest, available, method,
+  asset_name, manual_steps, release_url}`, never the password),
+  `POST /api/update/check` (force a re-check), and `POST /api/update/install`
+  `{password?}` → runs `selfupdate.Install` (deb: `sudo -S apt-get install`,
+  rpm: `sudo -S dnf install`, brew: `brew upgrade yoke`, pip: `pip install -U
+  yoke-agent`, msi: `msiexec /i`). On success `{ok:true, restart_required:true}`;
+  on failure `{ok:false, error, manual_steps}`. The password (deb/rpm only) is
+  read from the body, piped to `sudo -S`, and never logged/persisted — same
+  token-gated host-trust model as the terminal / Monaco-save / `!` routes.
+- **Web UI** ([web/app.js](web/app.js)): `checkForUpdate` reads the cached status
+  on boot (and on the `update_available` SSE) and reveals `#update-btn`;
+  `openUpdateDialog` shows `current → latest`, the detected method, a sudo
+  password field for deb/rpm, an **Install** button, and a manual-steps fallback.
+  After a successful install it offers **Restart now** → `restartServerAndReload`
+  (the existing `POST /api/server/restart` re-exec picks up the new binary).
+  Styles in [web/css/features/sidebar.css](web/css/features/sidebar.css)
+  (`.update-btn`) and [web/css/features/dialogs.css](web/css/features/dialogs.css)
+  (`.update-*`).
+- **No-op contract:** a `dev` build or `YOKE_UPDATE_CHECK=false` runs no poller,
+  shows no button, and is byte-identical to before.
 
 ### Conversation fork & rewind (Web UI)
 

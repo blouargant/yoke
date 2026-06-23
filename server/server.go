@@ -84,6 +84,11 @@ type serverDeps struct {
 	// served. Empty means root. Always starts with "/" and has no trailing
 	// slash when non-empty.
 	BasePath string
+	// Updates caches the self-update check result; backs the /api/update/* routes.
+	Updates *updateState
+	// Version is the running server build version (ldflags-injected); reported
+	// by /api/update/status and used to gate the self-update check.
+	Version string
 }
 
 // agentBusEvent is a single event from the shared event bus forwarded to an
@@ -778,6 +783,9 @@ func newEngine(d serverDeps) *gin.Engine {
 	})
 
 	registerConfigRoutes(auth, d.ConfigFiles, d.Restart, d.Manager, d.AgentOptions)
+	if d.Updates != nil {
+		registerUpdateRoutes(auth, d.Updates, d.Version)
+	}
 	registerPreferencesRoutes(auth, newPreferencesStore(d.ConfigFiles))
 	userCmdStore := newUserCommandsStore()
 	registerUserCommandsRoutes(auth, userCmdStore)

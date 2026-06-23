@@ -63,6 +63,18 @@ import (
 	"github.com/blouargant/yoke/internal/sessions"
 )
 
+// Build metadata, populated via -ldflags at build time (Makefile / goreleaser
+// already pass these for ./server):
+//
+//	-X main.version=... -X main.commit=... -X main.date=...
+//
+// A "dev" version disables the self-update check.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	// Background-daemon subcommands are dispatched before run()'s flag parsing.
 	// "start" re-execs this binary detached and frees the terminal; "stop"
@@ -275,6 +287,12 @@ func run() error {
 
 	runGuard := newSessionRunGuard()
 	pushEvents := newSessionPushBroadcaster()
+
+	// Self-update: cache the latest-release check and poll GitHub in the
+	// background (no-op for "dev" builds or when YOKE_UPDATE_CHECK=false).
+	updates := newUpdateState(version)
+	startUpdatePoller(rootCtx, updates, version, pushEvents)
+
 	// Active wake (a completed background task injects a synthetic turn) is on by
 	// default; YOKE_TASK_NOTIFY=false demotes it to a passive UI toast.
 	activeWake := true
@@ -344,6 +362,8 @@ func run() error {
 		ConfigFiles:         cfgFiles,
 		SkillsDeps:          skillDeps,
 		Restart:             restart,
+		Updates:             updates,
+		Version:             version,
 	})
 
 	srv := &http.Server{

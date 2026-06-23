@@ -162,7 +162,30 @@ body.resizing #sidebar { transition: none; }
   gap: 4px;
   align-items: center;
   flex-shrink: 0;
+  margin-left: auto;
 }
+
+/* Blue "Update available" button next to the Yoke title; hidden until the
+   self-update check finds a newer release. */
+.update-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: none;
+  border-radius: 5px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  cursor: pointer;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.update-btn:hover { filter: brightness(1.12); }
+.update-btn[hidden] { display: none; }
+#sidebar.collapsed .update-btn { display: none; }
 
 .app-name {
   font-size: 15px;

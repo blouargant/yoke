@@ -4894,6 +4894,10 @@ async function subscribeGlobalEvents() {
           // this session" check, and the notification's tag coalesces with any
           // duplicate the initiating tab's send path raised, so at most one shows.
           notifyChatReply(sid, (data && data.text) || "");
+        } else if (event === "update_available") {
+          // The self-update poller found a newer stable release — refresh the
+          // sidebar button without waiting for a page reload.
+          checkForUpdate();
         } else if (event === "ask_user" && data && typeof data === "object" && sid) {
           renderAskUserWidget(sid, data);
         } else if (event === "ask_user_cancel" && data && data.question_id) {
@@ -7389,6 +7393,138 @@ function uiConfirm({ title, message, confirmText, danger }) {
   });
 }
 
+// ─── Self-update (new-release button + install dialog) ───────────────────────
+// The server polls GitHub for a newer stable release; checkForUpdate reads the
+// cached result and reveals the blue "Update" button in the sidebar header.
+// Clicking it opens a dialog that installs the new package for the detected
+// install method (deb/rpm prompt for a sudo password), with a manual-steps
+// fallback when an automated install isn't possible or fails.
+let updateStatus = null; // last { current, latest, available, method, asset_name, manual_steps, release_url }
+
+async function checkForUpdate() {
+  const btn = document.getElementById("update-btn");
+  if (!btn) return;
+  try {
+    const res = await apiFetch("/api/update/status");
+    if (!res.ok) return;
+    updateStatus = await res.json();
+  } catch (_) { return; /* best-effort */ }
+  if (updateStatus && updateStatus.available) {
+    const label = btn.querySelector(".update-btn-label");
+    if (label) label.textContent = `Update → v${updateStatus.latest}`;
+    btn.setAttribute("data-tip", `yoke v${updateStatus.latest} is available (you have v${updateStatus.current || "?"}) — click to update`);
+    btn.hidden = false;
+  } else {
+    btn.hidden = true;
+  }
+}
+
+function manualStepsHtml(steps) {
+  if (!steps || !steps.length) return "";
+  const items = steps.map(s => `<li><code>${escHtml(s)}</code></li>`).join("");
+  return `<div class="update-manual"><div class="update-manual-title">Manual install steps</div><ol class="update-manual-list">${items}</ol></div>`;
+}
+
+function openUpdateDialog() {
+  const st = updateStatus;
+  if (!st || !st.available) return;
+  const needsSudo = st.method === "deb" || st.method === "rpm";
+  const overlay = uiModalShell("Update yoke");
+  const body = overlay.querySelector(".user-cmd-modal-body");
+  body.innerHTML = `
+    <div class="update-dialog">
+      <div class="update-versions">
+        <span class="update-cur">v${escHtml(st.current || "?")}</span>
+        <span class="update-arrow">→</span>
+        <span class="update-new">v${escHtml(st.latest || "?")}</span>
+      </div>
+      <div class="update-method">Install method: <strong>${escHtml(st.method || "unknown")}</strong></div>
+      ${needsSudo ? `<label class="user-cmd-field"><span class="user-cmd-field-label">sudo password</span><input type="password" class="update-pass" autocomplete="off" /></label>` : ""}
+      <div class="update-result" hidden></div>
+    </div>`;
+  const ok = overlay.querySelector(".ui-modal-ok");
+  ok.textContent = "Install";
+  const result = body.querySelector(".update-result");
+  const passInput = body.querySelector(".update-pass");
+
+  let done = false;
+  const close = () => { if (done) return; done = true; overlay.remove(); document.removeEventListener("keydown", onKey, true); };
+  overlay.querySelector(".ui-modal-cancel").addEventListener("click", close);
+  overlay.querySelector(".ui-modal-close").addEventListener("click", close);
+  overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
+
+  const showManual = (extraMsg) => {
+    result.hidden = false;
+    result.innerHTML = (extraMsg ? `<div class="update-error">${escHtml(extraMsg)}</div>` : "") + manualStepsHtml(st.manual_steps);
+  };
+
+  const doInstall = async () => {
+    ok.disabled = true;
+    ok.textContent = "Installing…";
+    result.hidden = false;
+    result.innerHTML = `<div class="update-progress">Downloading and installing… this can take a minute.</div>`;
+    try {
+      const res = await apiFetch("/api/update/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: passInput ? passInput.value : "" }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (res.ok && j.ok) {
+        ok.textContent = "Restart now";
+        ok.disabled = false;
+        result.innerHTML = `<div class="update-success">Installed v${escHtml(st.latest)}. Restart the server to run the new version.</div>`;
+        // Re-point the primary button to restart.
+        ok.replaceWith(ok.cloneNode(true));
+        const restartBtn = overlay.querySelector(".ui-modal-ok");
+        restartBtn.textContent = "Restart now";
+        restartBtn.addEventListener("click", () => { close(); restartServerAndReload(); });
+      } else {
+        ok.disabled = false;
+        ok.textContent = "Install";
+        showManual(j.error || "Install failed.");
+      }
+    } catch (e) {
+      ok.disabled = false;
+      ok.textContent = "Install";
+      showManual(String(e && e.message || e));
+    }
+  };
+
+  // For a raw/unknown method there is no automated install — show manual steps
+  // immediately and relabel the primary button.
+  if (st.method === "raw" || st.method === "unknown") {
+    ok.textContent = "Show manual steps";
+    ok.addEventListener("click", () => showManual(""));
+  } else {
+    ok.addEventListener("click", doInstall);
+  }
+
+  const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); close(); } };
+  document.addEventListener("keydown", onKey, true);
+  setTimeout(() => { (passInput || ok).focus(); }, 0);
+}
+
+// restartServerAndReload triggers the existing /api/server/restart endpoint and
+// reloads the page once the server is reachable again (mirrors the Settings
+// restart flow so the new binary is picked up by the re-exec).
+async function restartServerAndReload() {
+  try {
+    const r = await apiFetch("/api/server/restart", { method: "POST" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  } catch (_) { /* the process may already be tearing down */ }
+  const start = Date.now();
+  const tick = async () => {
+    try {
+      const h = await fetch((window.BASE_PATH || "") + "/api/health");
+      if (h.ok) { window.location.reload(); return; }
+    } catch (_) { /* not back yet */ }
+    if (Date.now() - start > 30000) return; // give up quietly
+    setTimeout(tick, 750);
+  };
+  setTimeout(tick, 1000);
+}
+
 // ─── Provider connection health ──────────────────────────────────────────────
 // On boot (and after a config reload) probe every configured model provider via
 // GET /api/providers/health. When any provider can't connect, reveal the orange
@@ -8173,6 +8309,10 @@ async function restoreLayout(rec, liveIds) {
   subscribeGlobalEvents(); // single multiplexed push stream for all sessions
   // Probe model-provider connectivity and reveal the in-pane warning on failure.
   checkProviderHealth(); // fire-and-forget; renderProviderWarning paints the panes
+  // Wire the self-update button and reveal it if a newer release is cached.
+  const updateBtn = document.getElementById("update-btn");
+  if (updateBtn) updateBtn.addEventListener("click", openUpdateDialog);
+  checkForUpdate(); // fire-and-forget
   await loadSessions();
 
   // Collect live session ids for layout validation.
