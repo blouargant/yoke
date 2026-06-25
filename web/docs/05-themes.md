@@ -9,6 +9,10 @@ Open **Settings → Appearance**, click a swatch. The theme is applied to the
 running tab immediately and synced to the server so it survives reloads and
 follows you across browsers signed in with the same token.
 
+First-time visitors who have never picked a theme see **VS Code Light** as the
+default skin. Selecting any palette (including VS Code Dark) overrides it and is
+remembered.
+
 ## Tiers
 
 - **Principal themes** — curated, default-quality palettes (VS Code Dark/Light,

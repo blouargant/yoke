@@ -83,6 +83,10 @@ const BASE_PATH = window.BASE_PATH || "";
   // (well-known community themes shipped as alternatives).
   // `tone` groups Dark/Light within a tier in the picker.
   const THEME_STORAGE_KEY = "agent_toolkit_theme";
+  // Default skin applied when the user has never picked a theme (no localStorage
+  // entry and no server-side preference). VS Code Dark remains selectable as the
+  // empty-id :root palette; this only governs the first-run fallback.
+  const DEFAULT_THEME = "vscode-light";
   // localStorage cache for the unified desktop-notification preference. The
   // durable source of truth is the server preferences.json (user home); this
   // cache is what the synchronous fire path in app.js reads.
@@ -110,7 +114,9 @@ const BASE_PATH = window.BASE_PATH || "";
   ];
 
   function getActiveTheme() {
-    return localStorage.getItem(THEME_STORAGE_KEY) || "";
+    // null = never chosen → fall back to the default skin; "" = explicit VS Code Dark.
+    const v = localStorage.getItem(THEME_STORAGE_KEY);
+    return v === null ? DEFAULT_THEME : v;
   }
   function applyTheme(id, opts) {
     const root = document.documentElement;
@@ -163,9 +169,11 @@ const BASE_PATH = window.BASE_PATH || "";
       const r = await fetch(BASE_PATH + "/api/preferences", { headers: authHeaders() });
       if (r.ok) {
         prefs = await r.json();
-        const serverTheme = (prefs && typeof prefs.theme === "string") ? prefs.theme : "";
-        if (serverTheme !== getActiveTheme()) {
-          applyTheme(serverTheme, { persist: false });
+        // An explicit server choice (any string, including "" = VS Code Dark)
+        // wins. Its absence (first run) leaves whatever the inline <head> script
+        // applied — the user's local choice, or the DEFAULT_THEME default skin.
+        if (prefs && typeof prefs.theme === "string" && prefs.theme !== getActiveTheme()) {
+          applyTheme(prefs.theme, { persist: false });
         }
         // Seed the notification cache from the server when a choice exists; an
         // absent value (first run) is left untouched so the opt-in can fire.

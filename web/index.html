@@ -12,6 +12,7 @@
     (function () {
       try {
         var t = localStorage.getItem("agent_toolkit_theme");
+        if (t === null) t = "vscode-light"; // default skin for first-time visitors
         if (t) document.documentElement.setAttribute("data-theme", t);
       } catch (_) { /* ignore */ }
     })();
