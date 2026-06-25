@@ -578,7 +578,11 @@ body.resizing #sidebar { transition: none; }
   width: 4px;
   flex-shrink: 0;
   cursor: col-resize;
-  background: transparent;
+  /* Blend with the surrounding panels at rest so the handle doesn't read as a
+   * thick dark line (transparent would let the darker body --bg show through,
+   * since the sidebar and chat both use --bg-panel). Hover/drag still highlight
+   * it with the accent below. */
+  background: var(--bg-panel);
   position: relative;
   transition: width 0.15s ease, background 0.15s;
 }
