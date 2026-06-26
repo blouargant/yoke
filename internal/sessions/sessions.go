@@ -302,6 +302,23 @@ func (r *Registry) SetTitle(id, title string) bool {
 	return true
 }
 
+// SetTitleIf atomically updates the in-memory title only when it still equals
+// want. It returns true when the swap happened. This guards the async
+// auto-title refinement against clobbering a title the user manually changed
+// in the meantime: the refiner sets want to the heuristic title it wrote, so a
+// manual rename (any other value) makes the swap a no-op. The caller persists
+// the change via SetConversationTitle only when this returns true.
+func (r *Registry) SetTitleIf(id, want, title string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m, ok := r.items[id]
+	if !ok || m.Title != want {
+		return false
+	}
+	m.Title = title
+	return true
+}
+
 // List returns all sessions sorted by most recent activity, newest first.
 // A freshly created session has LastUsedAt == CreatedAt == now, so new chats
 // always sort to the top; sessions then re-sort up as they receive turns.

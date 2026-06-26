@@ -1089,12 +1089,20 @@ hooked in [server/sse.go](server/sse.go) `handleMessages`):
   pattern as the routing capability probe in [agent/routing.go](agent/routing.go)
   — no runner/tools/event bus, so nothing reaches the SSE stream), 30 s timeout
   on `rootCtx`. When it returns a different title it overwrites the heuristic and
-  re-broadcasts; any failure silently keeps the heuristic.
+  re-broadcasts; any failure silently keeps the heuristic. The overwrite is a
+  **compare-and-swap** (`Registry.SetTitleIf(id, heur, refined)`) against the
+  heuristic title it set — so if the user **manually renames the session during
+  the ≤30 s LLM call** (the common case: they rename the fresh chat right after
+  the first question), the swap is a no-op and their title is left untouched
+  (no disk write, no re-broadcast). Without this, the late LLM title clobbered
+  the manual rename.
 
 Gated to `meta.Title == "" && meta.Turns == 0` (read before the producer
-goroutine's `Touch` increments the counter, under the run-guard), so a
-**manually-renamed** session and a **continued** one are never re-titled, and an
-attachment-only first turn (empty heuristic) keeps the petname. Writes go through
+goroutine's `Touch` increments the counter, under the run-guard), so a session
+**manually renamed before its first turn** and a **continued** one are never
+re-titled, and an attachment-only first turn (empty heuristic) keeps the petname.
+A session renamed *after* the first turn started is protected by the
+`SetTitleIf` CAS above. Writes go through
 the existing `Registry.SetTitle` (in-memory) + `sessions.SetConversationTitle`
 (persisted via the conversation lock, so they serialise with the turn's own
 persistence). CLI/TUI are untouched (titling is server-only). **No-op contract:**

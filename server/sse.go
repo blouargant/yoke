@@ -116,17 +116,21 @@ func handleMessages(d serverDeps) gin.HandlerFunc {
 					d.PushEvents.broadcast("session_renamed", meta.ID)
 				}
 				// Refine asynchronously with one off-stream LLM call; keep the
-				// heuristic title when it fails or doesn't change anything. Title
-				// writes serialise on the conversation lock, so this is safe to
-				// run alongside the turn's own persistence.
+				// heuristic title when it fails or doesn't change anything. The
+				// write is a compare-and-swap against the heuristic title we just
+				// set (SetTitleIf), so if the user manually renamed the session
+				// during the LLM call we leave their title untouched. Title writes
+				// serialise on the conversation lock, so this is safe to run
+				// alongside the turn's own persistence.
 				go func(prompt, heur string) {
 					tctx, cancel := context.WithTimeout(d.rootCtx, 30*time.Second)
 					defer cancel()
 					if t, ok := d.Manager.GenerateTitle(tctx, meta.ID, prompt); ok && t != heur {
-						d.Registry.SetTitle(meta.ID, t)
-						_ = sessions.SetConversationTitle(meta.ID, t)
-						if d.PushEvents != nil {
-							d.PushEvents.broadcast("session_renamed", meta.ID)
+						if d.Registry.SetTitleIf(meta.ID, heur, t) {
+							_ = sessions.SetConversationTitle(meta.ID, t)
+							if d.PushEvents != nil {
+								d.PushEvents.broadcast("session_renamed", meta.ID)
+							}
 						}
 					}
 				}(req.Prompt, heur)
