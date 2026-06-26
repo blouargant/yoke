@@ -550,7 +550,7 @@ Config files are resolved through a **3-layer search chain** (high → low prece
 | File | Purpose |
 |---|---|
 | `agents.json` | List of enabled agent names, squad composition, global paths, and `router_squad` (Omnis router squad; absent ⇒ `omnis`, `"none"` disables) |
-| `models.json` | Providers (credentials + endpoint) and reusable model profiles referenced by agents via `model_ref`. Per-model `"disable_streaming": true` forces agents using that model onto the non-streaming endpoint (for backends whose streamed output misbehaves). Also: embedding models (`"embedding": true` + `"dim"`) and `"embed_model_ref"` selecting the internal embedder for semantic recall |
+| `models.json` | Providers (credentials + endpoint) and reusable model profiles referenced by agents via `model_ref`. Per-model `"disable_streaming": true` forces agents using that model onto the non-streaming endpoint (for backends whose streamed output misbehaves). Per-model `"prompt_cache": true` adds Anthropic `cache_control` breakpoints for an upstream LiteLLM proxy (see "Prompt caching via LiteLLM" below). Also: embedding models (`"embedding": true` + `"dim"`) and `"embed_model_ref"` selecting the internal embedder for semantic recall |
 | `registry/agents/<name>/agent.json` | Per-agent definition (model_ref, tools, skills, builtin flag, etc.) |
 | `registry/agents/<name>/instruction.md` | Per-agent system instruction (markdown) |
 | `registry/agents/default.md` | Fallback system instruction for agents without their own |
@@ -711,6 +711,38 @@ name conflicts. It is **not** in `ConfigSearchDirs` (no `agents.json` etc. read
 from there) and is **never written to** — items edited via the web UI fork into
 the user layer, exactly like `/etc/omnis` (`paths.Layer` classifies it as
 `system`). Absent ⇒ byte-identical no-op (consumers stat-and-skip).
+
+### Prompt caching via LiteLLM (`prompt_cache`)
+
+Anthropic prompt caching is a **prefix match keyed off explicit `cache_control`
+breakpoints** — an un-annotated request never caches (Anthropic reports a 0% hit
+rate). omnis reaches Anthropic through a **LiteLLM proxy** on the `openai_compat`
+provider, so the native `core/llm/anthropic.go` adapter is bypassed; the request
+is built by the OpenAI-compat adapter ([core/llm/openai.go](core/llm/openai.go)).
+
+A per-model **`"prompt_cache": true`** flag in `models.json` opts that model into
+caching (mirrors the `disable_streaming` plumbing exactly: `ModelEntry` →
+`RuntimeModelConfig`/`RuntimeAgentConfig` → `llm.Selection.PromptCache` →
+`applyModelPrefs` sets `openAI.promptCache`). When set, `buildRequest` calls
+`markCacheablePrefix`, which places **ephemeral `cache_control` breakpoints** on
+the request's **system message** (in Anthropic's `tools → system → messages`
+render order this also caches the tool catalogue) **and** its **final message**
+(incremental multi-turn reuse). LiteLLM accepts the annotation by reading
+`cache_control` on a **structured content part** (the adapter converts the
+string body to array form to carry it) and forwards it to Anthropic as the
+native breakpoint. Two breakpoints, well within Anthropic's 4-breakpoint cap; a
+sub-minimum/empty prefix is a **silent upstream no-op**, never an error
+(`markMessageCacheable` also skips a content-less assistant/tool-call turn).
+
+**Opt-in by design.** A plain OpenAI endpoint caches automatically server-side
+and may reject the unrecognised `cache_control` field, so the flag defaults off
+and only the `openai`/`openai_compat` adapters honour it (no effect on gemini or
+the native anthropic adapter). Cache reads still surface in the cache-stats
+plugin via the existing `usage.prompt_tokens_details.cached_tokens` mapping
+([core/llm/openai.go](core/llm/openai.go) `cachedRead`), which LiteLLM populates
+from Anthropic's `cache_read_input_tokens`. The web UI exposes it as a **Prompt
+cache** toggle beside **Streaming** in Settings → Models. **No-op contract:**
+with the flag off the request is byte-identical to before.
 
 ### Filesystem layout
 

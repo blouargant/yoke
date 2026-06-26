@@ -5,8 +5,10 @@ package skills
 
 import (
 	"context"
+	"errors"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path"
 	"strings"
@@ -61,12 +63,14 @@ func Toolset(ctx context.Context, skillNames []string) (tool.Toolset, error) {
 		return nil, err
 	}
 	base := newMultiDirSkillsFS(paths.SkillsAllSearchDirs())
-	var src skill.Source
-	if len(skillNames) == 0 {
-		src = skill.NewFileSystemSource(base)
-	} else {
-		src = skill.NewFileSystemSource(newFilteredSkillsFS(base, skillNames))
+	fsys := base
+	if len(skillNames) != 0 {
+		fsys = newFilteredSkillsFS(base, skillNames)
 	}
+	// Wrap the upstream filesystem source so a single malformed skill (bad
+	// frontmatter, or a name that doesn't match its directory) is skipped
+	// instead of failing the whole toolset — see resilientSource.
+	src := resilientSource{Source: skill.NewFileSystemSource(fsys), fsys: fsys}
 	ts, err := skilltoolset.New(ctx, skilltoolset.Config{
 		Source:            src,
 		SystemInstruction: skillInstruction,
@@ -81,6 +85,63 @@ func Toolset(ctx context.Context, skillNames []string) (tool.Toolset, error) {
 		return &gatedSkillToolset{SkillToolset: ts, gate: g}, nil
 	}
 	return ts, nil
+}
+
+// ── resilientSource ───────────────────────────────────────────────────────
+
+// resilientSource wraps an ADK skill.Source so a single malformed skill does
+// not take down every agent that uses skills. ADK's fileSystemSource.
+// ListFrontmatters fails atomically: it silently ignores directories without a
+// SKILL.md, but a directory whose SKILL.md has bad frontmatter — or a name that
+// doesn't match its directory — returns a hard error that propagates out of
+// SkillToolset.ProcessRequest and aborts the whole agent turn. This wrapper
+// extends ADK's "silently ignore non-skill directories" behaviour to also skip
+// (with a logged warning) any directory that fails to load, so one broken skill
+// in the registry is merely invisible rather than fatal.
+//
+// All methods except ListFrontmatters delegate unchanged via the embedded
+// Source. The fallback only runs when the upstream scan fails, so behaviour is
+// byte-identical when every skill is valid.
+type resilientSource struct {
+	skill.Source
+	fsys fs.FS
+}
+
+func (r resilientSource) ListFrontmatters(ctx context.Context) ([]*skill.Frontmatter, error) {
+	// Fast path: the upstream scan succeeds whenever every skill is valid.
+	if fms, err := r.Source.ListFrontmatters(ctx); err == nil {
+		return fms, nil
+	}
+	// Slow path: re-derive the listing directory-by-directory, dropping any
+	// skill that fails to load. Enumerate the same fs.FS the inner source reads
+	// from so layer precedence / name filtering stay identical.
+	entries, err := fs.ReadDir(r.fsys, ".")
+	if err != nil {
+		// Can't even enumerate — surface the original upstream error.
+		fms, lerr := r.Source.ListFrontmatters(ctx)
+		if lerr != nil {
+			return nil, lerr
+		}
+		return fms, nil
+	}
+	var out []*skill.Frontmatter
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		fm, lerr := r.Source.LoadFrontmatter(ctx, e.Name())
+		if lerr != nil {
+			// ErrSkillNotFound (no SKILL.md) is an ordinary non-skill dir; ADK
+			// already ignores those silently. Anything else is a real defect
+			// (bad frontmatter, name mismatch) worth surfacing in the log.
+			if !errors.Is(lerr, skill.ErrSkillNotFound) {
+				log.Printf("skills: skipping invalid skill %q: %v", e.Name(), lerr)
+			}
+			continue
+		}
+		out = append(out, fm)
+	}
+	return out, nil
 }
 
 // ── filteredSkillsFS ──────────────────────────────────────────────────────

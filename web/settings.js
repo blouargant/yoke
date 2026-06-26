@@ -2177,10 +2177,12 @@ const BASE_PATH = window.BASE_PATH || "";
         if (row) renderEmbedSelector(d, row);
       };
       const rerender = () => { renderModelCards(d, el); refreshEmbed(); };
-      const { streamWrap, fg } = buildModelConfigFields(d, m, {
+      const { streamWrap, cacheWrap, fg } = buildModelConfigFields(d, m, {
         onChange, rerender, refreshEmbedSelector: refreshEmbed, name,
       });
-      card.querySelector(".model-card-title").appendChild(streamWrap);
+      const titleEl = card.querySelector(".model-card-title");
+      titleEl.appendChild(streamWrap);
+      titleEl.appendChild(cacheWrap);
       body.appendChild(fg);
 
       card.querySelector(".model-remove-link").addEventListener("click", async () => {
@@ -2236,6 +2238,32 @@ const BASE_PATH = window.BASE_PATH || "";
     streamSlider.className = "agent-toggle-slider";
     streamSwitch.appendChild(streamCb); streamSwitch.appendChild(streamSlider);
     streamWrap.appendChild(streamSwitch); streamWrap.appendChild(streamText);
+
+    // PROMPT CACHE toggle — OFF by default (persisted as prompt_cache). When ON
+    // the OpenAI-compat adapter adds Anthropic `cache_control` breakpoints to the
+    // long-lived prefix so an upstream LiteLLM proxy caches it against the backing
+    // Anthropic model. Leave OFF for a plain OpenAI endpoint (it caches
+    // automatically and may reject the annotation).
+    const cacheWrap = document.createElement("span");
+    cacheWrap.className = "model-stream-wrap";
+    cacheWrap.setAttribute("data-tip", "prompt-cache this model's long-lived prefix (for a LiteLLM proxy fronting an Anthropic model; leave off for a plain OpenAI endpoint)");
+    const cacheText = document.createElement("span");
+    cacheText.className = "model-stream-label";
+    cacheText.textContent = "Prompt cache";
+    const cacheSwitch = document.createElement("label");
+    cacheSwitch.className = "agent-toggle-switch model-stream-toggle";
+    const cacheCb = document.createElement("input");
+    cacheCb.type = "checkbox";
+    cacheCb.className = "agent-toggle-input";
+    cacheCb.checked = !!m.prompt_cache;
+    cacheCb.addEventListener("change", () => {
+      if (cacheCb.checked) m.prompt_cache = true; else delete m.prompt_cache;
+      onChange();
+    });
+    const cacheSlider = document.createElement("span");
+    cacheSlider.className = "agent-toggle-slider";
+    cacheSwitch.appendChild(cacheCb); cacheSwitch.appendChild(cacheSlider);
+    cacheWrap.appendChild(cacheSwitch); cacheWrap.appendChild(cacheText);
 
     const fg = document.createElement("div");
     fg.className = "model-field-grid";
@@ -2318,7 +2346,7 @@ const BASE_PATH = window.BASE_PATH || "";
     // the first response. The ⟳ button probes the embeddings endpoint.
     fg.appendChild(dimField(m, onChange));
 
-    return { streamWrap, fg };
+    return { streamWrap, cacheWrap, fg };
   }
 
   // appModelDialog presents a full model-configuration popup for adding a new
@@ -2367,7 +2395,7 @@ const BASE_PATH = window.BASE_PATH || "";
 
       function renderConfig() {
         configHost.innerHTML = "";
-        const { streamWrap, fg } = buildModelConfigFields(d, m, {
+        const { streamWrap, cacheWrap, fg } = buildModelConfigFields(d, m, {
           onChange: () => {},
           rerender: renderConfig,
           refreshEmbedSelector: () => {},
@@ -2377,6 +2405,7 @@ const BASE_PATH = window.BASE_PATH || "";
         const streamRow = document.createElement("div");
         streamRow.className = "model-dialog-stream";
         streamRow.appendChild(streamWrap);
+        streamRow.appendChild(cacheWrap);
         configHost.appendChild(streamRow);
         configHost.appendChild(fg);
       }

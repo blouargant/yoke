@@ -50,11 +50,23 @@ field with inline validation. It has two sub-tabs — Providers and Models
 
 ## Prompt caching
 
-When the provider supports prompt caching (Anthropic, OpenAI's beta endpoint),
-the agent automatically marks the long-lived prefix (system prompt + skill
-bodies + tool catalogue) as cacheable. The cache-stats plugin reports the hit
-rate in the context popup; a healthy run should show >80% hit rates after the
-first turn.
+**OpenAI** and most OpenAI-compatible gateways cache automatically server-side —
+no client annotation is needed, and the cache-stats plugin reports the hit rate
+(read from `usage.prompt_tokens_details.cached_tokens`) in the context popup.
+
+**Anthropic models behind a LiteLLM proxy** (reached via the `openai_compat`
+provider) do **not** cache unless the request carries explicit `cache_control`
+breakpoints — by Anthropic's own measure an un-annotated request shows a 0% hit
+rate. Turn on the per-model **Prompt cache** toggle (Settings → Models, persisted
+as `prompt_cache` in `models.json`) to have the adapter mark the long-lived
+prefix (system instruction + tool catalogue) and the latest turn as cacheable;
+LiteLLM forwards those breakpoints to Anthropic as `cache_control: {"type":
+"ephemeral"}`. A healthy run then shows >80% hit rates after the first turn.
+
+Leave the toggle **off** for a plain OpenAI endpoint — it caches automatically
+and may reject the `cache_control` annotation. The minimum cacheable prefix is
+model-dependent (≈1–4K tokens); a prefix below it is a silent no-op (the hit
+rate just stays at 0), never an error.
 
 ## Web UI provider-model picker
 

@@ -96,6 +96,13 @@ type ModelEntry struct {
 	// model behind vLLM/LiteLLM that runs away only when streamed); the
 	// non-streaming path delivers the full reply in one turn.
 	DisableStreaming bool `json:"disable_streaming,omitempty"`
+	// PromptCache enables Anthropic-style prompt caching for agents using this
+	// model. The OpenAI-compat adapter adds `cache_control: {"type":
+	// "ephemeral"}` breakpoints to the long-lived prefix (system instruction +
+	// tool catalogue) and the latest turn so an upstream LiteLLM proxy fronting
+	// an Anthropic model caches them. Leave it off for a plain OpenAI endpoint,
+	// which caches automatically and may reject the annotation.
+	PromptCache bool `json:"prompt_cache,omitempty"`
 }
 
 // modelsConfigFile is the on-disk shape of models.json.
@@ -160,6 +167,7 @@ type RuntimeModelConfig struct {
 	Embedding                         bool
 	Dim                               int
 	DisableStreaming                  bool
+	PromptCache                       bool
 }
 
 // RuntimeAgentConfig is one fully-resolved agent configuration entry.
@@ -176,6 +184,7 @@ type RuntimeAgentConfig struct {
 	CachedInputTokenPricePerMillion   float64
 	CacheCreationTokenPricePerMillion float64
 	DisableStreaming                  bool
+	PromptCache                       bool
 	Description                       string
 	Instruction                       string
 	Enabled                           bool
@@ -416,6 +425,7 @@ func normalizeModelCatalog(models map[string]ModelEntry, providers map[string]Ru
 			Embedding:                         m.Embedding,
 			Dim:                               m.Dim,
 			DisableStreaming:                  m.DisableStreaming,
+			PromptCache:                       m.PromptCache,
 		}
 	}
 	return out, nil
@@ -478,6 +488,7 @@ func resolveAgentEntries(entries []AgentEntry, modelCatalog map[string]RuntimeMo
 			CachedInputTokenPricePerMillion:   refModel.CachedInputTokenPricePerMillion,
 			CacheCreationTokenPricePerMillion: refModel.CacheCreationTokenPricePerMillion,
 			DisableStreaming:                  refModel.DisableStreaming,
+			PromptCache:                       refModel.PromptCache,
 			Description:                       strings.TrimSpace(e.Description),
 			Instruction:                       strings.TrimSpace(e.Instruction),
 			Enabled:                           enabled,
@@ -586,6 +597,7 @@ func normalizedAgentConfig(in RuntimeAgentConfig) RuntimeAgentConfig {
 		CachedInputTokenPricePerMillion:   in.CachedInputTokenPricePerMillion,
 		CacheCreationTokenPricePerMillion: in.CacheCreationTokenPricePerMillion,
 		DisableStreaming:                  in.DisableStreaming,
+		PromptCache:                       in.PromptCache,
 		Description:                       strings.TrimSpace(in.Description),
 		Instruction:                       strings.TrimSpace(in.Instruction),
 		Enabled:                           in.Enabled,

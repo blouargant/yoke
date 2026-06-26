@@ -157,6 +157,7 @@ func selectionFromAgentConfig(cfg RuntimeAgentConfig) llm.Selection {
 		BaseURL:          cfg.BaseURL,
 		APIKey:           cfg.APIKey,
 		DisableStreaming: cfg.DisableStreaming,
+		PromptCache:      cfg.PromptCache,
 	}
 }
 

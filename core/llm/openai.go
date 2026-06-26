@@ -40,6 +40,14 @@ type openAI struct {
 	// only when streamed). The non-streaming response is delivered as one
 	// final turn, which the web UI renders fine (just not token-by-token).
 	forceNonStreaming bool
+	// promptCache, when set, adds Anthropic-style `cache_control: {"type":
+	// "ephemeral"}` breakpoints to the long-lived prefix of every request so an
+	// upstream LiteLLM proxy (or any OpenAI-compatible gateway that understands
+	// the annotation) caches it against the backing Anthropic model. Set
+	// per-model via models.json `prompt_cache`. It is opt-in because a plain
+	// OpenAI endpoint does automatic server-side caching and may reject the
+	// unrecognised field — only enable it for an Anthropic-backed gateway.
+	promptCache bool
 }
 
 // NewOpenAI returns an LLM. baseURL may be empty for the official endpoint.
@@ -105,11 +113,24 @@ type oaiStreamOptions struct {
 }
 
 // oaiContentPart is one element of an array-form message content, used when a
-// user message contains both text and images.
+// user message contains both text and images, or when a cacheable prefix is
+// marked with a cache_control breakpoint (see oaiCacheControl).
 type oaiContentPart struct {
 	Type     string       `json:"type"`
 	Text     string       `json:"text,omitempty"`
 	ImageURL *oaiImageURL `json:"image_url,omitempty"`
+	// CacheControl marks this content part as a prompt-cache breakpoint for an
+	// upstream Anthropic-backed gateway (LiteLLM). Only emitted when the model
+	// has prompt_cache enabled; nil/omitted otherwise.
+	CacheControl *oaiCacheControl `json:"cache_control,omitempty"`
+}
+
+// oaiCacheControl is the Anthropic prompt-cache breakpoint LiteLLM forwards to
+// the backing model. Type is always "ephemeral"; TTL is left empty for the
+// default 5-minute window (Anthropic also accepts "1h").
+type oaiCacheControl struct {
+	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
 }
 
 type oaiImageURL struct {
@@ -256,6 +277,52 @@ func buildAssistantMsg(role, text string, calls []oaiToolCall) oaiMessage {
 	return buildUserMsg(role, text, calls, nil)
 }
 
+// markCacheablePrefix places Anthropic prompt-cache breakpoints on the
+// long-lived prefix of the request, for an upstream LiteLLM proxy fronting an
+// Anthropic model. Two breakpoints (well within Anthropic's 4-breakpoint
+// limit):
+//
+//  1. The system message — in Anthropic's render order (tools → system →
+//     messages) a breakpoint here also caches the tool catalogue, so the
+//     stable "system instruction + tool definitions" prefix is reused on every
+//     turn.
+//  2. The final message — so a growing multi-turn conversation reuses the
+//     history prefix incrementally (each turn's breakpoint becomes a read point
+//     on the next).
+//
+// A breakpoint on a sub-minimum or empty prefix is a silent no-op upstream
+// (cache_creation_input_tokens stays 0), never an error, so marking both is
+// safe even on the first short turn.
+func markCacheablePrefix(msgs []oaiMessage) {
+	if len(msgs) == 0 {
+		return
+	}
+	if msgs[0].Role == "system" {
+		markMessageCacheable(&msgs[0])
+	}
+	markMessageCacheable(&msgs[len(msgs)-1])
+}
+
+// markMessageCacheable attaches an ephemeral cache_control breakpoint to a
+// message's last content part, converting a plain string body to array form so
+// the annotation has somewhere to live. Messages with no textual content
+// (e.g. an assistant turn carrying only tool_calls) are left untouched.
+func markMessageCacheable(m *oaiMessage) {
+	cc := &oaiCacheControl{Type: "ephemeral"}
+	switch c := m.Content.(type) {
+	case string:
+		if c == "" {
+			return
+		}
+		m.Content = []oaiContentPart{{Type: "text", Text: c, CacheControl: cc}}
+	case []oaiContentPart:
+		if len(c) == 0 {
+			return
+		}
+		c[len(c)-1].CacheControl = cc
+	}
+}
+
 func mapRoleOAI(r string) string {
 	switch r {
 	case "model", "assistant":
@@ -299,6 +366,9 @@ func (o *openAI) buildRequest(req *model.LLMRequest, stream bool) oaiRequest {
 		Messages: o.toMessages(req),
 		Tools:    o.toTools(req),
 		Stream:   stream,
+	}
+	if o.promptCache {
+		markCacheablePrefix(r.Messages)
 	}
 	if stream {
 		// Ask the server to emit a final chunk carrying usage metadata.

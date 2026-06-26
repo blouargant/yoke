@@ -46,10 +46,10 @@ func TestOpenAIRetriesLiteLLMAnthropicOverload(t *testing.T) {
 
 func TestDisableStreamingForcesNonStreaming(t *testing.T) {
 	// Selection.DisableStreaming must make the adapter ignore stream=true.
-	llm := withStreamPref(NewOpenAI("test-model", "test-key", "http://x"), true)
+	llm := applyModelPrefs(NewOpenAI("test-model", "test-key", "http://x"), Selection{DisableStreaming: true})
 	o, ok := llm.(*openAI)
 	if !ok || !o.forceNonStreaming {
-		t.Fatalf("withStreamPref did not set forceNonStreaming: %+v", llm)
+		t.Fatalf("applyModelPrefs did not set forceNonStreaming: %+v", llm)
 	}
 
 	var gotStream atomic.Bool

@@ -51,6 +51,13 @@ type Selection struct {
 	// models.json `disable_streaming` for backends whose streamed output
 	// misbehaves. No effect on the gemini provider.
 	DisableStreaming bool
+	// PromptCache enables Anthropic-style prompt caching on the OpenAI-compat
+	// adapter: it adds `cache_control: {"type": "ephemeral"}` breakpoints to the
+	// long-lived request prefix so an upstream LiteLLM proxy caches it against
+	// the backing Anthropic model. Set per-model via models.json `prompt_cache`.
+	// Only the openai/openai_compat adapters honour it (LiteLLM is reached via
+	// openai_compat); no effect on gemini or the native anthropic adapter.
+	PromptCache bool
 }
 
 // New returns an ADK LLM selected by OMNIS_PROVIDER.
@@ -110,36 +117,36 @@ func NewWithSelection(ctx context.Context, sel Selection) (model.LLM, error) {
 		if apiKey == "" {
 			return nil, fmt.Errorf("llm: anthropic requires ANTHROPIC_API_KEY")
 		}
-		return withStreamPref(NewAnthropic(modelName, apiKey, baseURL), sel.DisableStreaming), nil
+		return applyModelPrefs(NewAnthropic(modelName, apiKey, baseURL), sel), nil
 
 	case "openai":
 		if apiKey == "" {
 			return nil, fmt.Errorf("llm: openai requires OPENAI_API_KEY")
 		}
-		return withStreamPref(NewOpenAI(modelName, apiKey, baseURL), sel.DisableStreaming), nil
+		return applyModelPrefs(NewOpenAI(modelName, apiKey, baseURL), sel), nil
 
 	case "openai_compat":
 		if baseURL == "" {
 			return nil, fmt.Errorf("llm: openai_compat requires OPENAI_BASE_URL")
 		}
-		return withStreamPref(NewOpenAI(modelName, apiKey, baseURL), sel.DisableStreaming), nil
+		return applyModelPrefs(NewOpenAI(modelName, apiKey, baseURL), sel), nil
 
 	default:
 		return nil, fmt.Errorf("llm: unknown provider %q (want gemini|anthropic|openai|openai_compat)", provider)
 	}
 }
 
-// withStreamPref flips the per-model non-streaming flag on the concrete
-// adapter when disable is set. Unknown adapter types (e.g. gemini) pass
-// through unchanged.
-func withStreamPref(m model.LLM, disable bool) model.LLM {
-	if disable {
-		switch v := m.(type) {
-		case *openAI:
-			v.forceNonStreaming = true
-		case *anthropic:
-			v.forceNonStreaming = true
-		}
+// applyModelPrefs flips the per-model adapter flags carried on the Selection:
+// the non-streaming preference (both adapters) and prompt caching (openAI
+// only — LiteLLM is reached via the openai_compat path that builds an *openAI).
+// Unknown adapter types (e.g. gemini) pass through unchanged.
+func applyModelPrefs(m model.LLM, sel Selection) model.LLM {
+	switch v := m.(type) {
+	case *openAI:
+		v.forceNonStreaming = sel.DisableStreaming
+		v.promptCache = sel.PromptCache
+	case *anthropic:
+		v.forceNonStreaming = sel.DisableStreaming
 	}
 	return m
 }
