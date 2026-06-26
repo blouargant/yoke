@@ -444,16 +444,21 @@ editor save and the GET only surfaces it when `> 1` to keep agent.json clean.
 The curator stays a single per-generation hook listening across every
 squad.
 
-**Durable / re-attachable sub-agent sessions (`resumable_sessions`)** — by
-default each sub-agent call is a stateless pure function (agenttool builds a
-throwaway session per call). Setting `"resumable_sessions": true` on an agent in
-its `agent.json` swaps the inner agenttool for
+**Durable / re-attachable sub-agent sessions (`resumable_sessions`)** —
+**opt-out, ON by default.** Each sub-agent's inner agenttool is swapped for
 [agent/resumable_agent_tool.go](agent/resumable_agent_tool.go)
 `newResumableAgentTool`, which owns **one persistent runner + session service**
 and a `handle → session` map: each call **returns a `session` handle**, and the
 leader can pass it back as **`resume_session`** to CONTINUE that exact
 conversation (the sub-agent keeps its prior context/work) instead of starting
-fresh. It implements the same `runnableTool` interface, so it slots into the
+fresh. Set `"resumable_sessions": false` on an agent in its `agent.json` to
+**opt out** — that reverts the sub-agent to the stateless pure-function agenttool
+(a throwaway session per call). The flag is a **tri-state pointer**
+(`AgentEntry.ResumableSessions *bool`, `json:"resumable_sessions,omitempty"`):
+nil/absent ⇒ enabled; only an explicit `false` disables. `resumableEnabled` in
+[agent/runtime_config.go](agent/runtime_config.go) resolves the default at the
+`AgentEntry`→`RuntimeAgentConfig` boundary, so the runtime side stays a plain
+`bool`. It implements the same `runnableTool` interface, so it slots into the
 **same** non-concurrent / parallel wrappers — **durability composes with
 `max_instances`** because identity is the per-call handle, not the agent name:
 each parallel task mints its own handle, resume always addresses one specific
@@ -463,7 +468,11 @@ on each call; handles are generation-scoped (a hot-reload drops them, and a stal
 handle silently falls back to a fresh session — the same retention boundary the
 leader's own sessions have). This is what lets the leader **resume** a sub-agent
 it stopped for mid-turn steering (see "Mid-turn steering") rather than re-running
-it from scratch. Off by default ⇒ byte-identical to the stateless agenttool.
+it from scratch. The web UI Settings → Agent panel exposes it as a **Resumable
+sessions** toggle (a `Sessions` section beside `Parallelism`, hidden for the
+leader and curator since both are excluded from fan-out); the toggle round-trips
+through the editor save and the GET only surfaces the flag when **disabled** (an
+absent key reads as on), keeping agent.json clean for the default case.
 
 **Soft-skill reflection pipeline** — at `EventSessionEnd`, [agent/load_recorder.go](agent/load_recorder.go)
 drains its in-memory bucket (leader-loaded skills, tool errors), runs
@@ -1678,11 +1687,11 @@ The whole mechanism hangs off one process-wide store and one plugin:
   itself, or re-run it to finish (note irrelevant). `Drain` is atomic, so the note
   is delivered **exactly once** (to the leader), then folds into the turn's
   persisted prompt via `TakeConsumed`. Trade-off: interrupting aborts the
-  sub-agent's **in-flight model call**; its *completed* steps survive when the
-  sub-agent opts into `resumable_sessions` (the leader resumes via the returned
-  `session` handle — see "Durable / re-attachable sub-agent sessions"), otherwise
-  only its last assistant text is handed back for salvage and a re-task restarts
-  from scratch.
+  sub-agent's **in-flight model call**; its *completed* steps survive because
+  `resumable_sessions` is **on by default** (the leader resumes via the returned
+  `session` handle — see "Durable / re-attachable sub-agent sessions"); only when
+  an agent has explicitly opted out (`resumable_sessions: false`) is just its last
+  assistant text handed back for salvage and a re-task restarts from scratch.
 - **Leader awareness (instruction).** `steeringAwarenessBlock()`
   ([agent/steer_plugin.go](agent/steer_plugin.go)) is appended to every non-router
   root instruction when steering is enabled: it tells the leader that IT (not the

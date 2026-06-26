@@ -3237,6 +3237,56 @@ const BASE_PATH = window.BASE_PATH || "";
       parBody.appendChild(parField);
       parSec.appendChild(parBody);
       body.appendChild(parSec);
+
+      // ── Sessions (resumable_sessions) ──
+      // Durable, re-attachable sub-agent sessions are ON by default (opt-out):
+      // each call returns a `session` handle the leader can pass back as
+      // resume_session to CONTINUE that exact conversation instead of starting
+      // fresh. Toggle OFF to make this sub-agent a stateless pure function (a
+      // throwaway session per call). Persist-clean: only the opt-out (false) is
+      // written; the default-on case leaves the key absent. Same leader/curator
+      // gate as Parallelism (both inert for non-fan-out roots).
+      const resSec = document.createElement("section");
+      resSec.className = "agent-detail-section";
+      const resHdr = document.createElement("div");
+      resHdr.className = "agent-section-hdr";
+      resHdr.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg><h3>${escHtml(tr("set.hdr.sessions"))}</h3>`;
+      resSec.appendChild(resHdr);
+      const resBody = document.createElement("div");
+      resBody.className = "agent-gen-grid";
+      const resField = document.createElement("div");
+      resField.className = "agent-gen-field";
+      const resRow = document.createElement("div");
+      resRow.className = "agent-toggle-row";
+      resRow.setAttribute("data-tip", tr("set.agent.resumableTip"));
+      const resSwitch = document.createElement("label");
+      resSwitch.className = "agent-toggle-switch";
+      const resCb = document.createElement("input");
+      resCb.type = "checkbox";
+      resCb.className = "agent-toggle-input";
+      // Opt-out default: checked unless explicitly disabled (resumable_sessions === false).
+      resCb.checked = a.resumable_sessions !== false;
+      resCb.addEventListener("change", () => {
+        if (resCb.checked) delete a.resumable_sessions; else a.resumable_sessions = false;
+        onChange();
+      });
+      const resSlider = document.createElement("span");
+      resSlider.className = "agent-toggle-slider";
+      resSwitch.appendChild(resCb);
+      resSwitch.appendChild(resSlider);
+      const resText = document.createElement("span");
+      resText.className = "agent-toggle-text";
+      resText.textContent = tr("set.agent.resumable");
+      resRow.appendChild(resSwitch);
+      resRow.appendChild(resText);
+      const resHint = document.createElement("p");
+      resHint.className = "agent-gen-hint";
+      resHint.textContent = tr("set.agent.resumableHint");
+      resField.appendChild(resRow);
+      resField.appendChild(resHint);
+      resBody.appendChild(resField);
+      resSec.appendChild(resBody);
+      body.appendChild(resSec);
     }
 
     // ── Skills ──

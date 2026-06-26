@@ -738,9 +738,12 @@ func registerConfigRoutes(rg *gin.RouterGroup, files configFiles, restart *resta
 						if a.MaxInstances > 1 {
 							agentMap["max_instances"] = a.MaxInstances
 						}
-						// Only surface resumable_sessions when enabled, to keep agent.json clean.
-						if a.ResumableSessions {
-							agentMap["resumable_sessions"] = true
+						// Resumable sessions are opt-out (ON by default), so only surface
+						// the flag when explicitly disabled — an absent flag means enabled,
+						// keeping agent.json clean for the common case. The editor reads
+						// `resumable_sessions !== false`, so an omitted key shows as checked.
+						if !a.ResumableSessions {
+							agentMap["resumable_sessions"] = false
 						}
 						agents = append(agents, agentMap)
 					}

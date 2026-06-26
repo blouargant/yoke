@@ -49,13 +49,14 @@ type AgentEntry struct {
 	// run in parallel from a single tool call. <= 1 (the default) keeps the
 	// classic one-at-a-time tool; > 1 exposes a batch/fan-out tool.
 	MaxInstances int `json:"max_instances,omitempty"`
-	// ResumableSessions opts this sub-agent into durable, re-attachable sessions:
-	// each call returns a `session` handle the leader can pass back as
+	// ResumableSessions controls durable, re-attachable sessions for this
+	// sub-agent: each call returns a `session` handle the leader can pass back as
 	// `resume_session` to continue that exact conversation (keeping its prior
-	// context) instead of starting fresh. Off by default — the sub-agent stays a
-	// stateless pure function. Composes with MaxInstances (each parallel task
-	// gets its own handle).
-	ResumableSessions bool `json:"resumable_sessions,omitempty"`
+	// context) instead of starting fresh. It is a tri-state pointer with an
+	// **opt-out** default: nil (absent) ⇒ ENABLED; set it to false to disable and
+	// revert the sub-agent to a stateless pure function. Composes with
+	// MaxInstances (each parallel task gets its own handle).
+	ResumableSessions *bool `json:"resumable_sessions,omitempty"`
 }
 
 // ProviderEntry describes one reusable provider profile in models.json.
@@ -213,8 +214,9 @@ type RuntimeAgentConfig struct {
 	A2AAgents []string
 	// MaxInstances is the resolved parallel-invocation cap (always >= 1).
 	MaxInstances int
-	// ResumableSessions enables durable, re-attachable sub-agent sessions (the
-	// leader can resume a prior call via its returned handle). See AgentEntry.
+	// ResumableSessions is the resolved (opt-out default applied) flag for durable,
+	// re-attachable sub-agent sessions: true unless the agent explicitly opted out.
+	// The leader can resume a prior call via its returned handle. See AgentEntry.
 	ResumableSessions bool
 }
 
@@ -513,7 +515,7 @@ func resolveAgentEntries(entries []AgentEntry, modelCatalog map[string]RuntimeMo
 			PermissionsConfigPath:             strings.TrimSpace(e.PermissionsConfigPath),
 			A2AAgents:                         normalizeNames(e.A2AAgents),
 			MaxInstances:                      maxInstances,
-			ResumableSessions:                 e.ResumableSessions,
+			ResumableSessions:                 resumableEnabled(e.ResumableSessions),
 		})
 	}
 	return out, nil
@@ -625,6 +627,13 @@ func normalizedAgentConfig(in RuntimeAgentConfig) RuntimeAgentConfig {
 		MaxInstances:                      maxInt(in.MaxInstances, 1),
 		ResumableSessions:                 in.ResumableSessions,
 	}
+}
+
+// resumableEnabled resolves the per-agent resumable-sessions flag. Durable,
+// re-attachable sub-agent sessions are ON by default (opt-out): an absent flag
+// (nil) means enabled; only an explicit false disables them.
+func resumableEnabled(p *bool) bool {
+	return p == nil || *p
 }
 
 func maxInt(a, b int) int {
