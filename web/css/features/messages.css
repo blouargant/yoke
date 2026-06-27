@@ -239,6 +239,33 @@
   border-radius: 4px;
   color: var(--text-strong);
 }
+/* A path the agent produced (resolves to a real file), whether wrapped in an
+   inline-code span or sitting in prose: tint it like a ref link and pair it with
+   the inline download button below. */
+.bubble-assistant .dl-path { color: var(--accent-strong, #4fc1ff); }
+/* Inline download button placed right after a produced-file path in the reply. */
+.inline-dl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: text-bottom;
+  width: 20px;
+  height: 20px;
+  margin-left: 4px;
+  padding: 0;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent-strong, #4fc1ff);
+  cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.inline-dl-btn:hover {
+  background: var(--accent-strong, #0e639c);
+  border-color: var(--accent-strong, #0e639c);
+  color: #fff;
+}
+.inline-dl-btn svg { display: block; }
 .bubble-assistant pre {
   background: var(--bg-panel);
   border: 1px solid var(--border);

@@ -6,8 +6,10 @@
 // this keeps the runner's in-memory session.Service in sync with a truncated /
 // copied history. The reconstruction is deliberately text-only: tool calls,
 // function responses, and attachments from the original turns are not replayed —
-// the same fidelity the model already gets after a server restart (which drops
-// in-memory context entirely) or a context compression.
+// the same fidelity the model gets after a context compression. The server also
+// drives this same reseed lazily on the first turn after a restart (gated by
+// HasSessionContext), so a restored session resumes with its earlier turns in
+// context instead of starting blank.
 
 package agent
 
@@ -65,6 +67,33 @@ func (m *Manager) ReseedSessionContext(ctx context.Context, userID, sessionID, a
 		}
 	}
 	return nil
+}
+
+// HasSessionContext reports whether the session's active squad already holds an
+// in-memory model context (an ADK session) for this id in the current pinned
+// generation. The server uses it to decide whether the first turn after a
+// restart needs seeding from the persisted transcript: Pin recreates the
+// session holder but ADK's InMemoryService starts empty, so without a reseed the
+// model would not recall the session's earlier turns. A nil Manager, an unknown
+// session, or an unresolved squad reports false (treat as "needs seeding"); the
+// caller gates the disk read + reseed on a false result, so this stays a cheap
+// per-turn check (a map lookup) for every already-loaded session.
+func (m *Manager) HasSessionContext(ctx context.Context, userID, sessionID, activeSquad string) bool {
+	if m == nil || sessionID == "" {
+		return false
+	}
+	inst := m.Lookup(sessionID)
+	if inst == nil {
+		return false
+	}
+	active := inst.Squad(activeSquad)
+	if active == nil {
+		active = inst.Default()
+	}
+	if active == nil {
+		return false
+	}
+	return squadHasSession(ctx, active, userID, sessionID)
 }
 
 // squadHasSession reports whether sq's session service already holds an

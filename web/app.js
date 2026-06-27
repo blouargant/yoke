@@ -1992,6 +1992,7 @@ function renderMarkdown(el, text) {
   if (el._stream) el._stream = null;
   if (AgentDebug.enabled) AgentDebug.render(performance.now() - t0);
   rewriteLocalImages(el);
+  linkifyFilePaths(el);
 }
 
 // ─── Local image rendering ───────────────────────────────────────────────────
@@ -2084,6 +2085,142 @@ function rewriteLocalImages(rootEl) {
       }));
     });
   });
+}
+
+// ─── Downloadable file paths in assistant replies ───────────────────────────
+// When the agent produces a deliverable that it did NOT create with the Write
+// tool — e.g. a .docx/.pdf/.zip exported via pandoc/zip in a Bash command, which
+// fires no `file_changed` event — there is no download card. But the agent
+// almost always *names* the produced file in its reply, either as an inline-code
+// path (``Fichier produit : `/tmp/report.docx` ``) or in prose ("Fichier :
+// /tmp/report.docx (≈ 12 Ko)"). We scan both, and for any path that points at a
+// real file on disk add a small download button right after it. Runs on both the
+// live finalize and history replay (renderMarkdown), so unlike the Write card
+// these survive a reload.
+
+// Small download glyph (down-arrow into a tray), inherits currentColor.
+const DOWNLOAD_ICON_SVG =
+  `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" ` +
+  `stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
+  `<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>` +
+  `<polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+
+// An ABSOLUTE filesystem path ending in a file extension. Relative paths are
+// deliberately excluded so we don't decorate every source file mentioned in a
+// coding chat (src/main.go, package.json, …) — generated deliverables almost
+// always land at an absolute path (/tmp/…, an export dir, a Windows drive).
+// `ABS_FILE_PATH_RE` matches a whole inline-code span; `EMBED_FILE_PATH_RE` (the
+// global form) extracts such paths embedded in prose text.
+const ABS_FILE_PATH_RE = /^(?:[A-Za-z]:[\\/]|\/)[^\s'"<>()[\]]+\.[A-Za-z0-9]{1,12}$/;
+const EMBED_FILE_PATH_RE = /(?:[A-Za-z]:[\\/]|\/)[^\s'"<>()[\]]+\.[A-Za-z0-9]{1,12}/g;
+
+// makeInlineDlBtn builds the small download button placed after a produced-file
+// path; clicking it downloads the file through the session's folder route.
+function makeInlineDlBtn(path, sessionId) {
+  const name = path.split("/").filter(Boolean).pop() || path;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "inline-dl-btn";
+  btn.setAttribute("data-tip", `${tr("menu.download")} — ${name}`);
+  btn.setAttribute("aria-label", `${tr("menu.download")} ${name}`);
+  btn.innerHTML = DOWNLOAD_ICON_SVG;
+  btn.addEventListener("click", () => downloadHostFile(path, name, sessionId));
+  return btn;
+}
+
+function linkifyFilePaths(rootEl) {
+  if (!rootEl) return;
+  // Resolve the session that owns this DOM (mirrors rewriteLocalImages) so the
+  // resolve + download routes use the right working directory.
+  const ownerPanel = paneOfNode(rootEl);
+  const sessionId = (ownerPanel && ownerPanel.sessionId) || sessionIdOfNode(rootEl) || activeSessionId;
+  if (!sessionId) return;
+
+  // Pass 1 — inline code spans whose entire text is an absolute file path.
+  const codeTargets = [];
+  rootEl.querySelectorAll("code").forEach(code => {
+    if (code.closest("pre")) return;        // skip fenced code blocks (snippets)
+    if (code.dataset.dlChecked) return;     // idempotent across repeat calls
+    const p = (code.textContent || "").trim();
+    if (!ABS_FILE_PATH_RE.test(p)) return;
+    code.dataset.dlChecked = "1";
+    codeTargets.push({ code, path: p });
+  });
+
+  // Pass 2 — absolute paths embedded in prose text nodes (not inside code/pre/
+  // links/already-decorated paths). Snapshot the matches now; mutate after the
+  // async resolve so the live TreeWalker isn't invalidated mid-walk.
+  const textTargets = []; // { node, matches: [{path, start, end}] }
+  const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      if (!n.nodeValue || n.nodeValue.indexOf("/") === -1) return NodeFilter.FILTER_REJECT;
+      if (n.parentElement && n.parentElement.closest("code, pre, a, .dl-path, .inline-dl-btn")) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const text = n.nodeValue;
+    EMBED_FILE_PATH_RE.lastIndex = 0;
+    const matches = [];
+    let m;
+    while ((m = EMBED_FILE_PATH_RE.exec(text)) !== null) {
+      // A genuine path mention starts at a boundary (start, whitespace, or an
+      // opening delimiter). This rejects mid-token matches — the "/main.go" tail
+      // of a relative "src/main.go", the "s://" of "https://…", a "./out/a.pdf"
+      // — and protocol-relative "//host/…" URLs.
+      const before = m.index > 0 ? text[m.index - 1] : "";
+      const atBoundary = before === "" || /[\s([{<"'=]/.test(before);
+      if (!atBoundary || m[0].startsWith("//")) continue;
+      matches.push({ path: m[0], start: m.index, end: m.index + m[0].length });
+    }
+    if (matches.length) textTargets.push({ node: n, matches });
+  }
+
+  const allPaths = [...new Set([
+    ...codeTargets.map(t => t.path),
+    ...textTargets.flatMap(t => t.matches.map(mm => mm.path)),
+  ])];
+  if (!allPaths.length) return;
+
+  apiFetch("/api/fileref/resolve", {
+    method: "POST",
+    body: JSON.stringify({ paths: allPaths, session: sessionId }),
+  }).then(r => r.json()).then(data => {
+    const kinds = (data && data.kinds) || {};
+    const isFile = p => kinds[p] === "file";
+
+    // Apply: inline-code spans.
+    codeTargets.forEach(({ code, path }) => {
+      if (!isFile(path) || !code.parentNode) return;
+      const sib = code.nextElementSibling;
+      if (sib && sib.classList && sib.classList.contains("inline-dl-btn")) return;
+      code.classList.add("dl-path");
+      code.insertAdjacentElement("afterend", makeInlineDlBtn(path, sessionId));
+    });
+
+    // Apply: prose text nodes — rebuild each into [text][span.dl-path][btn][text].
+    textTargets.forEach(({ node, matches }) => {
+      const hits = matches.filter(mm => isFile(mm.path));
+      if (!hits.length || !node.parentNode) return;
+      const text = node.nodeValue;
+      const frag = document.createDocumentFragment();
+      let last = 0;
+      hits.forEach(({ path, start, end }) => {
+        if (start < last) return; // defensive: ignore overlaps
+        frag.appendChild(document.createTextNode(text.slice(last, start)));
+        const span = document.createElement("span");
+        span.className = "dl-path";
+        span.textContent = text.slice(start, end);
+        frag.appendChild(span);
+        frag.appendChild(makeInlineDlBtn(path, sessionId));
+        last = end;
+      });
+      frag.appendChild(document.createTextNode(text.slice(last)));
+      node.parentNode.replaceChild(frag, node);
+    });
+  }).catch(() => {});
 }
 
 // Heuristic extractor: returns local-filesystem paths referenced anywhere in
@@ -2325,6 +2462,7 @@ function streamMdFinalize(bubble, fullText) {
   s.tailEl.remove();
   bubble._stream = null;
   bubble.classList.add("rendered");
+  linkifyFilePaths(bubble);
 }
 
 // ─── Pinned prompt header ────────────────────────────────────────────────────
@@ -3227,6 +3365,60 @@ function appendToolCall(name, args, container) {
   (container || fpTranscript()).appendChild(row);
   scrollBottom(paneOfNode(row));
   return block;
+}
+
+// appendFileDownloadCard renders a compact "file ready" card in the transcript
+// with a Download button, shown when the agent's Write tool generates a file so
+// the user can download the artifact straight from chat. Live-only, like tool
+// blocks (not replayed on reload — the file stays available in the Folders
+// panel). A fresh card per Write is intentional: a regenerated file gets a new
+// card, and same-turn double-writes are rare.
+function appendFileDownloadCard(sessionId, abs, container) {
+  if (!abs) return;
+  const root = container || getContainer(sessionId);
+  if (!root) return;
+  const name = abs.split("/").filter(Boolean).pop() || abs;
+  const row = document.createElement("div");
+  row.className = "tool-row";
+  const card = document.createElement("div");
+  card.className = "file-dl-card";
+  card.innerHTML =
+    `<span class="file-dl-icon">${fileIconSvg(name)}</span>` +
+    `<span class="file-dl-meta">` +
+      `<span class="file-dl-label">${escHtml(tr("chat.fileReady"))}</span>` +
+      `<span class="file-dl-name" data-tip="${escHtml(abs)}">${escHtml(name)}</span>` +
+    `</span>` +
+    `<button type="button" class="file-dl-btn">${escHtml(tr("menu.download"))}</button>`;
+  card.querySelector(".file-dl-btn").addEventListener("click", () => downloadHostFile(abs, name, sessionId));
+  row.appendChild(card);
+  root.appendChild(row);
+  scrollBottom(paneOfNode(row));
+}
+
+// downloadHostFile downloads a host file via the folder download route and saves
+// it via an object URL. A `sessionId` (when given) targets that session's route
+// so a relative path resolves against the session's working dir (matching the
+// fileref resolve); otherwise the global route is used (absolute paths resolve
+// as-is on either route).
+async function downloadHostFile(abs, name, sessionId) {
+  try {
+    const base = sessionId
+      ? `/api/sessions/${encodeURIComponent(sessionId)}/folder/download`
+      : folderOpBase("download");
+    const res = await apiFetch(`${base}?path=${encodeURIComponent(abs)}`);
+    if (!res.ok) { console.warn("download failed", abs); return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name || (abs.split("/").filter(Boolean).pop() || "download");
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch {
+    console.warn("download failed", abs);
+  }
 }
 
 // appendNestedToolCall adds an inner tool block inside a parent sub-agent block.
@@ -5794,6 +5986,12 @@ async function sendMessage(panel) {
           // a new/changed file in the Folders panel when it's in the visible dir.
           onAgentFileChanged(data.path);
           if (pathUnderFoldersDir(data.path)) scheduleFoldersRefresh();
+          // A freshly *generated* file (the Write tool) is offered as a download
+          // card in the transcript so the user can grab the artifact (a report,
+          // PDF, markdown, …) without opening the Folders panel. Edits/reverts to
+          // existing files don't render a card (they'd be noisy mid-coding) but
+          // still refresh editors above.
+          if ((data.tool || "") === "write") appendFileDownloadCard(sessionId, data.path, container);
           break;
         }
 

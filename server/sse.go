@@ -289,6 +289,24 @@ func handleMessages(d serverDeps) gin.HandlerFunc {
 				emitFrame("routing", map[string]any{"from": from, "to": to, "reason": reason})
 			}
 
+			// First turn after a server restart: Pin recreated the session holder
+			// but ADK's in-memory session starts empty, so the model would not
+			// recall the session's earlier turns — a "resume our previous
+			// conversation" request would be answered with "I have no access to
+			// previous turns" (the reported bug). Seed the active squad's context
+			// once from the persisted transcript. HasSessionContext makes this a
+			// no-op on every later in-process turn (the squad already holds the
+			// session once it has run), and meta.Turns==0 skips it for a brand-new
+			// session, so there is no steady-state per-turn cost. Best-effort: a
+			// failure is logged inside the helper and the turn still runs.
+			if meta.Turns > 0 && !d.Manager.HasSessionContext(runCtx, meta.UserID, meta.ID, startSquad) {
+				if f, err := sessions.LoadConversationFile(meta.ID); err == nil && len(f.Turns) > 0 {
+					rctx, rcancel := context.WithTimeout(d.rootCtx, reseedTimeout)
+					_ = d.Manager.ReseedSessionContext(rctx, meta.UserID, meta.ID, startSquad, toExchanges(f.Turns))
+					rcancel()
+				}
+			}
+
 			// Drive the user's turn — plus any mid-turn steering they add — to
 			// completion. The steering plugin injects notes the user typed into the
 			// running turn at each model boundary; whatever the user typed but no
@@ -639,9 +657,11 @@ func streamEvents(
 	// editor showing that file. The path is resolved against the session's
 	// working directory here (where the tools actually run) so the browser can
 	// match it to an editor tab keyed by absolute path.
-	pendingFileEdits := map[string]string{} // call_id → absolute path
+	type fileEditNote struct{ path, tool string } // tool that touched the file (lowercased)
+	pendingFileEdits := map[string]fileEditNote{} // call_id → file edit
 	noteFileTool := func(name, callID string, args map[string]any) {
-		switch strings.ToLower(name) {
+		tool := strings.ToLower(name)
+		switch tool {
 		case "write", "edit", "revert":
 		default:
 			return
@@ -656,10 +676,10 @@ func streamEvents(
 		if cwd != "" && !filepath.IsAbs(fp) {
 			fp = filepath.Join(cwd, fp)
 		}
-		pendingFileEdits[callID] = fp
+		pendingFileEdits[callID] = fileEditNote{path: fp, tool: tool}
 	}
 	emitFileChanged := func(callID string, resp map[string]any) {
-		path, ok := pendingFileEdits[callID]
+		fe, ok := pendingFileEdits[callID]
 		if !ok {
 			return
 		}
@@ -669,7 +689,10 @@ func streamEvents(
 		if res, _ := resp["result"].(string); strings.HasPrefix(res, "Error") {
 			return
 		}
-		emit("file_changed", map[string]any{"path": path})
+		// `tool` lets the web UI offer a download only for freshly *generated*
+		// files (Write), not edits/reverts to existing ones (which would be
+		// noisy during coding sessions); both still drive the editor refresh.
+		emit("file_changed", map[string]any{"path": fe.path, "tool": fe.tool})
 	}
 
 	// Convert the rangefunc ADK iterator to a channel so we can select on it

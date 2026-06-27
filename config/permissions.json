@@ -129,6 +129,7 @@
       "doc_agent",
       "Read",
       "Edit(//tmp/**)",
+      "Bash(pandoc *)",
       "Bash(go build *)",
       "Bash(go test *)",
       "Bash(go vet *)",

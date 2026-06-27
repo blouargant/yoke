@@ -1071,6 +1071,25 @@ Every mutable component scopes its state by `(userID, buildTimestamp)`. Concurre
 - `agent_events_<ts>.log` — event audit log (global per build)
 - `conversation_<id>.json` — Web UI turn history + title + `squad` name + `Harvested` flag + `Archived` flag (server only)
 
+**Context restore after a restart.** The web UI persists turn *history* to
+`conversation_<id>.json`, but the model's working memory is the ADK runner's
+**in-memory `session.InMemoryService`**, which a process restart drops. The
+startup loop in [server/main.go](server/main.go) only `RegisterSession`s +
+`Pin`s + `Watch`es each persisted session — `Pin` recreates the session holder
+but leaves its ADK session empty — so without intervention the first turn after
+a restart runs blank ("I have no access to previous turns"). To close that gap,
+[server/sse.go](server/sse.go) `handleMessages` **lazily reseeds** the active
+squad's context from the persisted transcript on the first post-restart turn:
+gated by `Manager.HasSessionContext` ([agent/session_reseed.go](agent/session_reseed.go))
+so it's a no-op map-check on every later in-process turn (and `meta.Turns==0`
+skips brand-new sessions), it loads `conversation_<id>.json` and calls the same
+`Manager.ReseedSessionContext` the fork/rewind path uses (text-only fidelity —
+tool calls/attachments not replayed). Only the session's **persisted/active**
+squad is seeded; routing to a *different* squad post-restart starts that squad
+fresh, the same per-squad-context boundary as within a single process. **Known
+gap:** the inbound A2A turn path ([server/a2a_server.go](server/a2a_server.go))
+runs `sq.Runner.Run` directly and is **not** yet reseeded on restart.
+
 ### Session states (active / archived / deleted)
 
 A session is in one of three states:
@@ -2751,10 +2770,12 @@ sessions, live in at most one pane).
   it edits **existing files only** (path must classify as a regular file).
 - **Live-refresh on agent edits.** When the agent's `Write`/`Edit`/`revert`
   tools mutate a file, the server emits a **`file_changed`** SSE event carrying
-  the **absolute** path — resolved against the session's working directory in
+  the **absolute** path **and the `tool`** that touched it (lowercased
+  `write`/`edit`/`revert`) — resolved against the session's working directory in
   [server/sse.go](server/sse.go) (`streamEvents` now takes the session `cwd`;
-  `noteFileTool` records the path per `call_id` at the tool-call, `emitFileChanged`
-  fires it at the tool-result only when the result isn't an `Error …` string).
+  `noteFileTool` records `{path, tool}` per `call_id` at the tool-call,
+  `emitFileChanged` fires it at the tool-result only when the result isn't an
+  `Error …` string).
   Both the leader (`tool_call`/`tool_result`) and sub-agent
   (`agent_tool_call`/`agent_tool_result`) paths are wired. The client
   ([web/app.js](web/app.js) `onAgentFileChanged`) refreshes any open editor model
@@ -2766,6 +2787,35 @@ sessions, live in at most one pane).
   `.pane-editor-stale` banner with a **Reload from disk** button — so the agent's
   changes never silently clobber unsaved edits and vice-versa. Stale state clears
   on save or reload.
+- **Generated-file download card.** When the `file_changed` event's `tool` is
+  **`write`** (a freshly *generated* file — a report, PDF, markdown, …), the
+  client also renders a compact **download card** in the transcript
+  (`appendFileDownloadCard` → `.file-dl-card` in [web/css/features/tools.css](web/css/features/tools.css),
+  i18n `chat.fileReady` + the existing `menu.download`) with a **Download** button
+  that `downloadHostFile`s the artifact via the existing `folder/download` route
+  (session route when active, else the global route — both resolve absolute paths
+  as-is). `edit`/`revert` deliberately render **no** card (they'd be noisy
+  mid-coding) but still drive the editor/Folders refresh above. The card is
+  **live-only** (not replayed on reload, like tool blocks — the file stays
+  available in the Folders panel).
+- **Downloadable produced-file paths in replies.** A deliverable the agent did
+  **not** create with the Write tool — e.g. a `.docx`/`.pdf`/`.zip` exported via
+  `pandoc`/`zip` in a **Bash** command — fires no `file_changed` event, so it gets
+  no card. But the agent almost always *names* the file in its reply — as an
+  **inline-code path** (``Fichier produit : `/tmp/report.docx` ``) **or in prose**
+  ("Fichier : /tmp/report.docx (≈ 12 Ko)"). `linkifyFilePaths`
+  ([web/app.js](web/app.js), run from both `renderMarkdown` and `streamMdFinalize`,
+  mirroring `rewriteLocalImages`) scans **both** — inline `<code>` spans
+  (`ABS_FILE_PATH_RE`, whole-span match) **and prose text nodes** (`EMBED_FILE_PATH_RE`
+  + a boundary check that rejects URL/relative-path false positives like `https://…`,
+  `//host/…`, the `/main.go` tail of `src/main.go`) — for an **absolute** path with
+  a file extension (relative paths are excluded to avoid decorating every source
+  file mentioned mid-coding), batch-resolves the candidates via
+  `POST /api/fileref/resolve`, and for each that resolves to a real **file** inserts
+  a small inline **download button** (`.inline-dl-btn` / `.dl-path` in
+  [web/css/features/messages.css](web/css/features/messages.css)) after the path,
+  wired to `downloadHostFile(path, name, sessionId)`. Because it runs on
+  `renderMarkdown` too, these links **survive a reload** (unlike the Write card).
 - **Lifecycle.** `closeTab` on a dirty editor tab confirms discard, then disposes
   the model; `closePanel` disposes the pane's Monaco instance and any editor-tab
   models it owned. Editor keys carry no push subscription, so the session-only

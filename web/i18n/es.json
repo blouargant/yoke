@@ -215,6 +215,7 @@
   "menu.newFile": "Nuevo archivo…",
   "menu.newFolder": "Nueva carpeta…",
   "menu.download": "Descargar",
+  "chat.fileReady": "Archivo listo",
   "menu.downloadFolder": "Descargar carpeta",
   "menu.copyPath": "Copiar ruta",
   "menu.cut": "Cortar",
