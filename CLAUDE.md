@@ -738,6 +738,16 @@ glob/grep path. The embedder is process-wide (built once on `Infrastructure`,
 survives hot-reload like the MCP pool); changing `embed_model_ref` needs a
 server restart to take effect.
 
+**Evaluator model selection (`/goal`).** A sibling top-level field
+`"eval_model_ref"` names the chat model used by the `/goal` completion evaluator
+(see "Goals (`/goal`)"). The Settings → Models panel exposes it as a **"/goal
+evaluator model"** dropdown (`renderEvalSelector` in [web/settings.js](web/settings.js),
+beside the embedding selector, listing the non-embedding chat models). Unlike the
+embedder it is **hot-reloadable** (resolved per call from the pinned generation's
+`RuntimeSettings`), so a config Reload applies it — no restart. It is overridden
+by `eval_model_ref` in `agents.json` then `OMNIS_GOAL_MODEL_REF`; unset ⇒ the
+session's leader model. `config/models.json` defaults it to `hosted`.
+
 **Models editor auto-fill (web UI).** The Settings → Models panel can prefill
 model fields from the provider instead of asking the user to type them. Two
 server helper routes back this (both resolve credentials via `provider_ref` —
