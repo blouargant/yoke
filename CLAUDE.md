@@ -207,6 +207,29 @@ make build-example-s11_todo    # build a single example
 go run ./examples/s21_skills   # run an example directly
 ```
 
+## Model compatibility probe (`tools/model-probe`)
+
+A standalone, **dependency-free** (Python stdlib) test suite that verifies a live
+OpenAI-compatible endpoint + model supports the features Omnis actually uses, with
+**real requests** — streamed chat, tool calling (non-streaming **and** streaming),
+**parameterless tools over streaming**, the tool-result round-trip — plus side info
+(prompt caching, thinking-model `reasoning_content`, usage accounting, `/models`,
+LiteLLM `/model/info`); embeddings/vision checks are opt-in. Born from the GLM-5.2
+streaming regression (see [glm-5.2-streaming-bug.md](glm-5.2-streaming-bug.md));
+the `Parameterless tool over streaming` check encodes exactly that fault and emits
+a `disable_streaming` recommendation when it trips.
+
+```bash
+python3 tools/model-probe/probe.py -u https://api.scaleway.ai/v1 -m glm-5.2 -k "$KEY"
+python3 tools/model-probe/probe.py --list           # all checks + what they validate
+```
+
+Exit code is non-zero iff a **critical** check fails. **To add a check, just drop a
+`tools/model-probe/checks/<name>.py` with `@check(...)` functions — it is
+auto-discovered, no wiring.** Full guide + the feature→check map live in
+[tools/model-probe/CLAUDE.md](tools/model-probe/CLAUDE.md); keep that suite current
+when Omnis starts depending on a new model capability.
+
 ## Architecture
 
 **Design contract**: the same binary becomes a code reviewer, Kubernetes triage assistant, or DBA helper purely by mounting different tools, skills, and MCP servers. No code changes required to retarget the agent.
