@@ -155,6 +155,7 @@ var ReservedNames = map[string]struct{}{
 	"loop":         {},
 	"schedule":     {},
 	"goal":         {},
+	"rollback":     {},
 }
 
 // Validate normalises and checks c in place, returning an error describing the

@@ -18,6 +18,7 @@ import (
 
 	"github.com/blouargant/omnis/agent"
 	"github.com/blouargant/omnis/core/permissions"
+	"github.com/blouargant/omnis/internal/configedit"
 	"github.com/blouargant/omnis/internal/paths"
 )
 
@@ -175,16 +176,11 @@ func (c configFiles) writePathFor(name string, body []byte) (string, bool) {
 	return filepath.Join(paths.WriteDirForLayer(layer), filename), true
 }
 
-// configFileNames maps the editor's whitelisted short names to the
-// underlying JSON filenames. Used by both path() and writePath().
-var configFileNames = map[string]string{
-	"agent":       "agents.json",
-	"models":      "models.json",
-	"permissions": "permissions.json",
-	"mcp":         "mcp_config.json",
-	"a2a":         "a2a_config.json",
-	"hooks":       "hooks.json",
-}
+// configFileNames maps the editor's whitelisted short names to the underlying
+// JSON filenames. Used by both path() and writePath(). Aliases the canonical map
+// in internal/configedit so the server and the in-process settings tools agree
+// on the whitelist.
+var configFileNames = configedit.ConfigFileNames
 
 // resolveConfigFiles determines the absolute paths of the JSON files that
 // the web UI may edit. agent.ResolveRuntimeSettings provides the same
@@ -482,6 +478,48 @@ func registerConfigRoutes(rg *gin.RouterGroup, files configFiles, restart *resta
 			"draining_sessions": draining,
 			"generations":       gens,
 		})
+	})
+
+	// POST /settings/rollback — undo recent settings changes (config-change
+	// journal) and hot-reload. Backs the /rollback command and the Helper's
+	// rollback_settings tool. Body: {steps?: int, all?: bool}; default undoes the
+	// most recent change, all=true reverts everything to the initial state.
+	rg.POST("/settings/rollback", func(c *gin.Context) {
+		var body struct {
+			Steps int  `json:"steps"`
+			All   bool `json:"all"`
+		}
+		_ = c.ShouldBindJSON(&body)
+		steps := body.Steps
+		switch {
+		case body.All:
+			steps = -1
+		case steps <= 0:
+			steps = 1
+		}
+		res, err := configedit.RollbackHistory(steps)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		reloaded := false
+		if manager != nil {
+			if _, rerr := manager.Reload(c.Request.Context(), agentOpts); rerr == nil {
+				reloaded = true
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"reverted":  res.Reverted,
+			"batches":   res.Batches,
+			"remaining": res.Remaining,
+			"reloaded":  reloaded,
+		})
+	})
+
+	// GET /settings/history — list the undoable settings changes (newest first)
+	// so the UI / Helper can show what /rollback would revert.
+	rg.GET("/settings/history", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"changes": configedit.History()})
 	})
 
 	// GET /config/status — exposes the current agent generation + a map of
@@ -974,45 +1012,10 @@ func describeConfigFile(name, path string) configFileInfo {
 	return info
 }
 
-// atomicWriteFile writes data to path via a sibling temp file and renames
-// it into place. The temp file is removed on any failure. The destination's
-// existing file mode is preserved when present; otherwise 0o644 is used.
-// The parent directory must already exist — writes fail loudly when it does
-// not, which is the right outcome for an editor that targets known files.
+// atomicWriteFile writes data to path via a sibling temp file and renames it
+// into place, preserving the destination's existing file mode. It delegates to
+// internal/configedit so the server and the in-process settings tools share one
+// implementation.
 func atomicWriteFile(path string, data []byte) error {
-	perm := os.FileMode(0o644)
-	if st, err := os.Stat(path); err == nil {
-		perm = st.Mode().Perm()
-	}
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".tmp-cfg-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpName) }
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		cleanup()
-		return err
-	}
-	return nil
+	return configedit.AtomicWriteFile(path, data)
 }

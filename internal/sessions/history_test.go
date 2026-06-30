@@ -181,6 +181,51 @@ func TestArchivedFlagRoundTrip(t *testing.T) {
 	}
 }
 
+// TestHiddenFlagRoundTrip verifies the hidden flag (used by the in-Settings
+// assistant session) persists and is read back by LoadPersistedSessions without
+// disturbing the conversation turns — mirroring the archived flag.
+func TestHiddenFlagRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("OMNIS_HOME", tmp)
+	if err := os.MkdirAll(filepath.Join(tmp, "logs"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const sid = "hidden-test"
+	if err := AppendConversationTurn(sid, "hi", "hello"); err != nil {
+		t.Fatalf("AppendConversationTurn: %v", err)
+	}
+	reloaded := func() *SessionMeta {
+		for _, m := range LoadPersistedSessions() {
+			if m.ID == sid {
+				return m
+			}
+		}
+		return nil
+	}
+
+	if err := SetConversationHidden(sid, true); err != nil {
+		t.Fatalf("SetConversationHidden: %v", err)
+	}
+	meta := reloaded()
+	if meta == nil {
+		t.Fatalf("session %q missing after hide", sid)
+	}
+	if !meta.Hidden {
+		t.Fatalf("Hidden = false after hide, want true")
+	}
+	if meta.Turns != 1 {
+		t.Fatalf("Turns = %d after hide, want 1 (turns must be preserved)", meta.Turns)
+	}
+
+	if err := SetConversationHidden(sid, false); err != nil {
+		t.Fatalf("SetConversationHidden(false): %v", err)
+	}
+	if meta := reloaded(); meta == nil || meta.Hidden {
+		t.Fatalf("Hidden still set after unhide: %+v", meta)
+	}
+}
+
 // TestConcurrentMutatorsDoNotLoseTurns exercises the per-session lock: many
 // goroutines append turns while others flip the harvested/archived/title flags
 // on the same session. Every append must survive — the old unsynchronised

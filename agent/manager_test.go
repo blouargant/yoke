@@ -12,6 +12,31 @@ func newTestInstance(gen int) *Instance {
 	return &Instance{Generation: gen}
 }
 
+// TestManagerCurrentSelfHealsDanglingGeneration verifies that if currentGen ever
+// points at a torn-down/missing instance, Current() and Pin() recover by
+// promoting the highest live generation instead of returning nil (which would
+// brick the UI: /api/squads null, new chats failing with "unknown squad").
+func TestManagerCurrentSelfHealsDanglingGeneration(t *testing.T) {
+	inst1 := newTestInstance(1)
+	m := NewManager(nil, inst1)
+	inst3 := newTestInstance(3)
+	m.instances[3] = &managedInstance{inst: inst3}
+	// Simulate a corrupted state: currentGen points at a generation that is not
+	// in the instances map (the bug that bricked the user's server).
+	m.currentGen = 2
+
+	if cur := m.Current(); cur == nil || cur.Generation != 3 {
+		t.Fatalf("Current() should self-heal to the highest live gen (3), got %v", cur)
+	}
+	if got := m.CurrentGeneration(); got != 3 {
+		t.Fatalf("currentGen should be repaired to 3, got %d", got)
+	}
+	// Pin must also resolve a live instance after the repair.
+	if pinned := m.Pin("s1"); pinned == nil || pinned.Generation != 3 {
+		t.Fatalf("Pin() should attach to the repaired current gen (3), got %v", pinned)
+	}
+}
+
 func TestManagerPinAndReleaseRefcount(t *testing.T) {
 	inst1 := newTestInstance(1)
 	m := NewManager(nil, inst1)

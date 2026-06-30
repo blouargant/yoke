@@ -20,10 +20,12 @@
   gap: 0.5rem;
   max-width: 22rem;
   padding: 0.55rem 0.8rem;
-  border: 1px solid var(--border, #3a3a3a);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--panel-bg, #1e1e1e);
-  color: var(--text, #e6e6e6);
+  /* Use the real theme tokens (NOT the non-existent --panel-bg, which always
+     fell back to a hardcoded dark colour → dark-on-dark in light themes). */
+  background: var(--bg-panel);
+  color: var(--text);
   font-size: 0.85rem;
   cursor: pointer;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
@@ -33,7 +35,7 @@
 }
 
 .task-toast:hover {
-  border-color: var(--accent, #5b9dd9);
+  border-color: var(--accent);
 }
 
 .task-toast.leaving {
@@ -47,8 +49,8 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--accent, #5b9dd9);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent, #5b9dd9) 25%, transparent);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
 .task-toast-text {
@@ -59,14 +61,23 @@
 
 /* Generic confirmation toast (showToast): non-clickable, short-lived. */
 .task-toast.toast-info { cursor: default; }
-.task-toast.toast-info:hover { border-color: var(--border, #3a3a3a); }
+.task-toast.toast-info:hover { border-color: var(--border); }
+/* Error toasts carry a full sentence — let them wrap onto multiple lines
+   instead of being clipped to one with an ellipsis. */
+.task-toast.toast-err { align-items: flex-start; }
+.task-toast.toast-err .task-toast-text {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.35;
+}
 .toast-glyph {
   flex: 0 0 auto;
   font-weight: 700;
   line-height: 1;
   color: #4caf50;
 }
-.task-toast.toast-err .toast-glyph { color: var(--danger-fg, #e5534b); }
+.task-toast.toast-err .toast-glyph { color: var(--danger-fg); }
 
 @keyframes task-toast-in {
   to {

@@ -5190,7 +5190,15 @@ async function newChat(panel, squadOverride, dirOverride) {
     });
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
-      console.error("new chat failed:", errBody.error || res.statusText);
+      const reason = errBody.error || res.statusText;
+      console.error("new chat failed:", reason);
+      // Surface it instead of silently doing nothing. The common case is a stale
+      // agent generation with no squads (e.g. "unknown squad") after a bad
+      // hot-reload — point the user at the recovery (Reload/Restart in Settings).
+      const hint = /unknown squad/i.test(reason)
+        ? tr("app.newChat.failedNoSquad")
+        : tr("app.newChat.failed", { reason });
+      showToast(hint, "err");
       return null;
     }
     const data = await res.json();
@@ -5246,6 +5254,11 @@ async function subscribeGlobalEvents() {
       backoff = 1000; // connected — reset backoff
       for await (const { event, data } of parseSSE(res)) {
         const sid = data && typeof data === "object" ? data.session_id : null;
+        // The in-Settings "Settings assistant" runs on a hidden Helper session
+        // that owns its own stream + UI (settings.js). Skip all of its
+        // session-scoped global events here so it never spawns a pane
+        // ask-widget, an OS notification, or a sidebar entry.
+        if (sid && sid === window.__omnisSettingsSessionId) continue;
         if (event === "mailbox_push" && sid && !sessionSending.has(sid)) {
           await appendNewPushTurns(sid);
         } else if (event === "task_notification" && sid) {
@@ -6389,6 +6402,7 @@ const BUILTIN_SLASH_COMMANDS = [
   { cmd: "/init",          args: "",           desc: "Analyze the repo and write a starter AGENT.md", kind: "common", builtin: true },
   { cmd: "/cost",          args: "",           desc: "Alias for /usage", kind: "common", builtin: true },
   { cmd: "/learn-now",     args: "[reason]",   desc: "Immediately run soft-skill curation and show result", kind: "common", builtin: true },
+  { cmd: "/rollback",      args: "[N|all]",    desc: "Undo recent settings changes (revert the last one, N of them, or all)", kind: "common", builtin: true },
   // Session — actions/info about the current conversation.
   { cmd: "/status",        args: "",           desc: "Show current session info", kind: "session", builtin: true },
   { cmd: "/usage",         args: "",           desc: "Show this session's token usage and estimated cost", kind: "session", builtin: true },
@@ -6424,7 +6438,7 @@ const SLASH_SECTIONS = [
 ];
 // Fixed (non-alphabetical) order for the "common" section — most-used commands
 // first. A "common" command not listed here sorts after these, alphabetically.
-const COMMON_ORDER = ["/help", "/compress", "/init", "/cost", "/learn-now"];
+const COMMON_ORDER = ["/help", "/compress", "/init", "/cost", "/learn-now", "/rollback"];
 
 // sortSlashSection orders one section's rows: the "common" section follows the
 // curated COMMON_ORDER (importance, not A→Z); every other section is A→Z by cmd.
@@ -7149,6 +7163,43 @@ async function handleSlashCommand(raw, panel) {
       break;
     }
 
+    case "rollback": {
+      // Undo recent settings changes made via chat / the Settings panel.
+      // "/rollback" → last change; "/rollback N" → N changes; "/rollback all".
+      const arg = argPart.trim().toLowerCase();
+      let bodyObj = {};
+      if (arg === "all") {
+        bodyObj = { all: true };
+      } else if (arg) {
+        const n = parseInt(arg, 10);
+        if (!isNaN(n) && n > 0) bodyObj = { steps: n };
+      }
+      try {
+        const res = await apiFetch(`/api/settings/rollback`, {
+          method: "POST",
+          body: JSON.stringify(bodyObj),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          appendCommandBubble(d.error || "Rollback failed.", true, panel);
+          return;
+        }
+        if (!d.reverted || d.reverted.length === 0) {
+          appendCommandBubble("Nothing to undo — no recent settings changes recorded.", false, panel);
+          return;
+        }
+        const lines = d.reverted.map(r =>
+          `- ${r.action === "deleted" ? "removed" : "restored"} **${r.label || r.path}**`);
+        let msg = `**Reverted ${d.batches} settings change${d.batches === 1 ? "" : "s"}:**\n\n` + lines.join("\n");
+        msg += `\n\n${d.remaining} change${d.remaining === 1 ? "" : "s"} still undoable.`;
+        if (d.reloaded) msg += " Config reloaded.";
+        appendCommandBubble(msg, false, panel);
+      } catch (err) {
+        appendCommandBubble(String(err), true, panel);
+      }
+      break;
+    }
+
     case "learn": {
       if (!panel.sessionId) {
         appendCommandBubble("No active session — start a chat first.", true, panel);
@@ -7640,6 +7691,15 @@ function initTooltips() {
 
   function place() {
     if (!current) return;
+    // Reset to the top-left BEFORE measuring. The layer is shrink-to-fit
+    // (width:auto + max-width), so its width depends on the room to the right of
+    // its current `left`. A stale `left` near the right edge (e.g. the bottom-
+    // right assistant FAB) would squeeze the box and make the text wrap onto far
+    // more lines than it should — measuring at left:0 always yields the true
+    // max-width-capped width. (Synchronous style writes force layout, not paint,
+    // so the box never visibly jumps.)
+    layer.style.left = "0px";
+    layer.style.top = "0px";
     const r = current.getBoundingClientRect();
     const tw = layer.offsetWidth;
     const th = layer.offsetHeight;

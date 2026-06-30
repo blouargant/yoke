@@ -595,12 +595,20 @@ body.resizing #sidebar { transition: none; }
 }
 
 #sidebar-footer {
+  display: flex;
+  align-items: center;
   padding: 8px 12px;
+  /* Fixed bottom-bar height (--bottom-bar-h) so the Settings button row keeps a
+     stable size at the bottom of the sidebar. */
+  min-height: var(--bottom-bar-h);
   border-top: 1px solid var(--border);
   /* Never let the Settings button be clipped by the sidebar's overflow:hidden;
      the scrollable middle sections (sessions / settings menu) yield space. */
   flex-shrink: 0;
 }
+/* The button is the sole child and is vertically centred by the footer flex;
+   drop its top margin (meant for in-column flow) so it sits truly centred. */
+#sidebar-footer #settings-btn { margin-top: 0; }
 #set-token {
   width: 100%;
   background: transparent;

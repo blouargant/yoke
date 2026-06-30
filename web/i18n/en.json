@@ -124,6 +124,8 @@
   "common.gotIt": "Got it",
 
   "app.session.noOthers": "No other sessions yet.",
+  "app.newChat.failed": "Couldn't start a new chat: {reason}",
+  "app.newChat.failedNoSquad": "Couldn't start a new chat — the server has no squads loaded (a stale agent generation). Reload or restart the server (Settings → Reload), then refresh the page.",
   "app.session.noMessages": "No messages yet.",
   "app.session.namePlaceholder": "Session name…",
   "app.session.deleteTitle": "Delete chat?",
@@ -288,6 +290,19 @@
   "common.remove": "Remove",
   "common.enabled": "Enabled",
   "set.loading": "Loading…",
+
+  "set.assistant.placeholder": "Ask the Helper",
+  "set.assistant.sendTip": "Ask the Helper",
+  "set.assistant.title": "Helper",
+  "set.assistant.open": "Ask the Helper what to change — it'll do it for you…",
+  "set.assistant.close": "Close",
+  "set.assistant.thinking": "thinking…",
+  "set.assistant.streaming": "streaming…",
+  "set.assistant.running": "running {tool}…",
+  "set.assistant.working": "working… ({secs}s)",
+  "set.assistant.error": "Sorry, something went wrong. Please try again.",
+  "set.assistant.contextPreamble": "(Context: I'm viewing the \"{panel}\" settings panel in the omnis web UI. Help me with it, and apply any setting changes I ask for.)",
+  "set.assistant.changedDirty": "Settings changed — discard your unsaved edits to see them.",
 
   "set.cmd.apiUnavailable": "User commands API not available.",
   "set.cmd.empty": "No user commands yet. Click \"Add command\" to create one.",

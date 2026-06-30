@@ -263,9 +263,10 @@ func newEngine(d serverDeps) *gin.Engine {
 		// Body is optional: clients that don't care about squads can POST
 		// with no body or `{}` and get the default squad.
 		var body struct {
-			Squad string `json:"squad"`
-			Title string `json:"title"`
-			Dir   string `json:"dir"`
+			Squad  string `json:"squad"`
+			Title  string `json:"title"`
+			Dir    string `json:"dir"`
+			Hidden bool   `json:"hidden"`
 		}
 		_ = c.ShouldBindJSON(&body)
 		squad := strings.ToLower(strings.TrimSpace(body.Squad))
@@ -303,6 +304,12 @@ func newEngine(d serverDeps) *gin.Engine {
 		// Persist the squad immediately so a server restart before the
 		// first turn still sees the right squad on the session.
 		_ = sessions.SetConversationSquad(meta.ID, squad)
+		// Hidden utility sessions (e.g. the in-Settings assistant) are kept out
+		// of the sidebar list but otherwise behave normally.
+		if body.Hidden {
+			d.Registry.SetHidden(meta.ID, true)
+			_ = sessions.SetConversationHidden(meta.ID, true)
+		}
 		if title := strings.TrimSpace(body.Title); title != "" {
 			_ = sessions.SetConversationTitle(meta.ID, title)
 		}
@@ -340,10 +347,21 @@ func newEngine(d serverDeps) *gin.Engine {
 			"session_id": meta.ID,
 			"created_at": meta.CreatedAt,
 			"squad":      meta.Squad,
+			"hidden":     body.Hidden,
 		})
 	})
 	auth.GET("/sessions", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"sessions": d.Registry.List()})
+		// Hidden utility sessions (e.g. the in-Settings assistant) stay in the
+		// registry (pinned/watched/retained) but are omitted from the sidebar.
+		all := d.Registry.List()
+		out := make([]*sessions.SessionMeta, 0, len(all))
+		for _, m := range all {
+			if m.Hidden {
+				continue
+			}
+			out = append(out, m)
+		}
+		c.JSON(http.StatusOK, gin.H{"sessions": out})
 	})
 	auth.DELETE("/sessions/:id", func(c *gin.Context) {
 		id := c.Param("id")

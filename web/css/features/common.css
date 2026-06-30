@@ -19,6 +19,9 @@
 
   /* Layout */
   --sidebar-w: 280px;
+  /* Height of the sidebar footer (Settings button, features/sidebar.css
+     #sidebar-footer). Kept as a token so other bottom chrome can align to it. */
+  --bottom-bar-h: 60px;
   /* Chat content column width, as a % of the pane so it scales edge-to-edge
      with the window. Leaves a margin on each side (not full-bleed). */
   --col-w: 90%;

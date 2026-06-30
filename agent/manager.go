@@ -20,7 +20,13 @@ type Manager struct {
 
 	mu         sync.RWMutex
 	currentGen int
-	instances  map[int]*managedInstance
+	// genSeq is a monotonic generation-number allocator. Each Reload reserves a
+	// fresh number from it under the lock BEFORE the (slow, unlocked) build, so
+	// two concurrent reloads can never pick the same generation — a collision
+	// previously made the second reload's teardown delete the generation it had
+	// just installed, emptying the map and bricking the UI (squads:null).
+	genSeq    int
+	instances map[int]*managedInstance
 	// sessionGen tracks the generation a session is pinned to. A session
 	// without an entry is not yet pinned and will pin to currentGen on its
 	// first Lookup / Pin call.
@@ -42,6 +48,7 @@ func NewManager(infra *Infrastructure, first *Instance) *Manager {
 	return &Manager{
 		infra:      infra,
 		currentGen: first.Generation,
+		genSeq:     first.Generation,
 		instances:  map[int]*managedInstance{first.Generation: {inst: first}},
 		sessionGen: map[string]int{},
 	}
@@ -53,12 +60,35 @@ func (m *Manager) Infra() *Infrastructure { return m.infra }
 
 // Current returns the Instance for the current generation.
 func (m *Manager) Current() *Instance {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.repairCurrentLocked()
 	if mi := m.instances[m.currentGen]; mi != nil {
 		return mi.inst
 	}
 	return nil
+}
+
+// repairCurrentLocked guarantees currentGen points at a live instance, promoting
+// the highest-numbered live generation when it doesn't. A no-op in the normal
+// case. This is defense-in-depth: if any path ever leaves currentGen dangling
+// (e.g. a generation torn down out from under it), the whole UI would otherwise
+// brick — /api/squads returns null and every new chat fails with "unknown
+// squad". Self-healing to the newest live generation keeps the app usable.
+// Caller must hold m.mu for writing.
+func (m *Manager) repairCurrentLocked() {
+	if m.instances[m.currentGen] != nil {
+		return
+	}
+	best := 0
+	for gen := range m.instances {
+		if gen > best {
+			best = gen
+		}
+	}
+	if best != 0 {
+		m.currentGen = best
+	}
 }
 
 // CurrentGeneration returns the current generation number.
@@ -93,6 +123,7 @@ func (m *Manager) Pin(sessionID string) *Instance {
 			return mi.inst
 		}
 	}
+	m.repairCurrentLocked()
 	mi := m.instances[m.currentGen]
 	if mi == nil {
 		return nil
@@ -242,13 +273,28 @@ func (m *Manager) PinnedGeneration(sessionID string) int {
 //
 // On error the current generation is preserved.
 func (m *Manager) Reload(ctx context.Context, opts Options) (*Instance, error) {
+	// Reserve a unique generation number under the lock. Using a monotonic
+	// allocator (not currentGen+1, which two concurrent reloads both read as the
+	// same value during the unlocked build below) guarantees concurrent reloads
+	// get DISTINCT numbers — the fix for the race that emptied the instance map.
 	m.mu.Lock()
-	nextGen := m.currentGen + 1
+	m.genSeq++
+	nextGen := m.genSeq
 	m.mu.Unlock()
 
 	inst, err := BuildInstance(ctx, m.infra, opts, nextGen)
 	if err != nil {
 		return nil, fmt.Errorf("reload: %w", err)
+	}
+	// A generation with no squads is never valid — a parseable omnis config always
+	// yields at least the synthesised "default" squad. Installing a squad-less
+	// instance would brick the UI (/api/squads returns null; new chats fail with
+	// "unknown squad"). This can happen if a reload reads config mid-write (e.g.
+	// during a settings edit / rollback). Reject it and keep the previous, working
+	// generation live rather than swapping to a degenerate one.
+	if len(inst.SquadNames()) == 0 {
+		_ = inst.Close()
+		return nil, fmt.Errorf("reload: rebuilt agent generation has no squads — keeping the previous configuration (check the config files for a transient/empty state)")
 	}
 
 	m.mu.Lock()
@@ -256,10 +302,16 @@ func (m *Manager) Reload(ctx context.Context, opts Options) (*Instance, error) {
 	m.instances[nextGen] = &managedInstance{inst: inst}
 	oldGen := m.currentGen
 	m.currentGen = nextGen
-	// Old generation with no pinned sessions can be torn down immediately.
-	if oldMI := m.instances[oldGen]; oldMI != nil && oldMI.refcount == 0 {
-		delete(m.instances, oldGen)
-		_ = oldMI.inst.Close()
+	// Tear down the PREVIOUS generation when it has no pinned sessions — but never
+	// the one we just installed. The `oldGen != nextGen` guard is essential: a
+	// concurrent reload that finishes after us may have already advanced
+	// currentGen, and without the guard the teardown would delete the live
+	// current generation, emptying the map and nil-ing Current().
+	if oldGen != nextGen {
+		if oldMI := m.instances[oldGen]; oldMI != nil && oldMI.refcount == 0 {
+			delete(m.instances, oldGen)
+			_ = oldMI.inst.Close()
+		}
 	}
 	return inst, nil
 }

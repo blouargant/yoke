@@ -91,6 +91,7 @@ same colour/size in multiple partials.
 | `squads.css` | Squads sub-tab (Agent → Squads) |
 | `commands.css` | User Commands settings |
 | `automation.css` | Automation panel (Settings → Automation): loops & schedules list + add-routine form |
+| `assistant.css` | Settings assistant: the bottom-right floating action button + the floating right-side chat drawer (`.settings-assistant-fab`, `.settings-assistant-panel`, `.sa-composer`, `.sa-msg`, `.sa-ask`) |
 
 > **Two `sidebar.css` files:** `features/sidebar.css` is the **main app**
 > sidebar (session list, folders/archived panels). `settings/sidebar.css` is the

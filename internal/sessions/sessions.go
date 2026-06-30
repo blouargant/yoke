@@ -45,6 +45,13 @@ type SessionMeta struct {
 	// indexes) and are surfaced in a separate panel by the UI surfaces. The flag
 	// is persisted in the conversation file so it survives server restarts.
 	Archived bool `json:"archived,omitempty"`
+	// Hidden marks a utility session that should not appear in the sidebar
+	// session list (e.g. the in-Settings "Settings assistant" Helper session).
+	// Hidden sessions are otherwise fully functional and persisted — they stay
+	// in the registry (pinned, watched, retained, ask-user delivered); only the
+	// HTTP session-list handler filters them out. Persisted in the conversation
+	// file so the flag survives server restarts.
+	Hidden bool `json:"hidden,omitempty"`
 	// Goal is the session's active /goal completion condition, mirrored from the
 	// conversation file so the server can restore an in-progress goal on restart.
 	// Empty when no goal is active. The live goal state lives in the process-wide
@@ -242,6 +249,28 @@ func (r *Registry) SetArchived(id string, v bool) bool {
 	go func() {
 		if err := SetConversationArchived(id, v); err != nil {
 			log.Printf("sessions: failed to persist archived flag for session %s: %v", id, err)
+		}
+	}()
+	return true
+}
+
+// SetHidden sets (or clears) the hidden flag on a session (in-memory + persisted
+// to the conversation file asynchronously, mirroring SetArchived). A hidden
+// session is omitted from the HTTP session-list but otherwise unchanged. Returns
+// true when a session was found.
+func (r *Registry) SetHidden(id string, v bool) bool {
+	r.mu.Lock()
+	m, ok := r.items[id]
+	if ok {
+		m.Hidden = v
+	}
+	r.mu.Unlock()
+	if !ok {
+		return false
+	}
+	go func() {
+		if err := SetConversationHidden(id, v); err != nil {
+			log.Printf("sessions: failed to persist hidden flag for session %s: %v", id, err)
 		}
 	}()
 	return true

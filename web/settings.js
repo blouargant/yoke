@@ -295,7 +295,7 @@ const BASE_PATH = window.BASE_PATH || "";
   };
 
   // ─── DOM refs ──────────────────────────────────────────────────────────
-  let panelEl, tabsEl, viewToggleEl, bodyEl, footerEl, statusEl;
+  let panelEl, tabsEl, viewToggleEl, bodyEl, statusEl;
   let sidebarMenuEl, sidebarMenuListEl; // in-sidebar settings categories
 
   // Navigation-context for the consolidated Registries hub. When non-null, the
@@ -609,6 +609,11 @@ const BASE_PATH = window.BASE_PATH || "";
           <span class="settings-breadcrumb-current"></span>
         </nav>
         <div class="settings-tabs" role="tablist"></div>
+        <div class="settings-header-actions">
+          <span class="settings-status"></span>
+          <button type="button" class="btn-discard">${escHtml(tr("settings.discard"))}</button>
+          <button type="button" class="btn-save">${escHtml(tr("common.save"))}</button>
+        </div>
       </header>
       <div class="settings-body">
         <div class="settings-body-toolbar">
@@ -621,11 +626,6 @@ const BASE_PATH = window.BASE_PATH || "";
         </div>
         <div class="settings-body-content"></div>
       </div>
-      <footer class="settings-footer">
-        <span class="settings-status"></span>
-        <button type="button" class="btn-discard">${escHtml(tr("settings.discard"))}</button>
-        <button type="button" class="btn-save">${escHtml(tr("common.save"))}</button>
-      </footer>
     `;
     const main = document.getElementById("chat");
     main.appendChild(panelEl);
@@ -633,7 +633,6 @@ const BASE_PATH = window.BASE_PATH || "";
     tabsEl = panelEl.querySelector(".settings-tabs");
     viewToggleEl = panelEl.querySelector(".settings-view-toggle");
     bodyEl = panelEl.querySelector(".settings-body-content");
-    footerEl = panelEl.querySelector(".settings-footer");
     statusEl = panelEl.querySelector(".settings-status");
 
     for (const f of FILES) {
@@ -651,6 +650,8 @@ const BASE_PATH = window.BASE_PATH || "";
 
     panelEl.querySelector(".btn-save").addEventListener("click", saveActive);
     panelEl.querySelector(".btn-discard").addEventListener("click", discardActive);
+
+    buildAssistant();
 
     return panelEl;
   }
@@ -761,6 +762,7 @@ const BASE_PATH = window.BASE_PATH || "";
       state.commandsRemotes = { browsing: null, viewing: null };
     }
     syncActiveHighlight(id);
+    assistantSetContext(id);
     renderBody();
   }
 
@@ -1608,8 +1610,8 @@ const BASE_PATH = window.BASE_PATH || "";
 
   function updateFooter() {
     const dirty = hasUnsavedActive();
-    footerEl.querySelector(".btn-save").disabled = !dirty;
-    footerEl.querySelector(".btn-discard").disabled = !dirty;
+    panelEl.querySelector(".btn-save").disabled = !dirty;
+    panelEl.querySelector(".btn-discard").disabled = !dirty;
   }
 
   // ─── Form rendering (per file) ─────────────────────────────────────────
@@ -8905,6 +8907,314 @@ const BASE_PATH = window.BASE_PATH || "";
   }
 
   function isOpen() { return state.open; }
+
+  // ─── Settings assistant (in-panel Helper chat) ──────────────────────────
+  // A Helper-backed chat reached via a floating action button (FAB) at the
+  // bottom-right of the settings body; the FAB toggles a floating right-side
+  // drawer holding the chat (transcript + composer). It talks to ONE hidden,
+  // reusable Helper-squad session (server `hidden` flag) and hints the active
+  // panel so the Helper scopes its answers/changes.
+  // Reuses app.js globals: apiFetch, parseSSE, renderMarkdown, isRoutingTool.
+  const SA_SESSION_KEY = "agent_toolkit_settings_session";
+  // Publish the (cached) session id early so app.js's global /api/events handler
+  // skips it (no pane ask-widget / OS notification / sidebar entry for it).
+  if (localStorage.getItem(SA_SESSION_KEY)) {
+    window.__omnisSettingsSessionId = localStorage.getItem(SA_SESSION_KEY);
+  }
+  const asst = {
+    sessionId: null, contextId: "", sending: false,
+    box: null, fab: null, transcript: null, statusLine: null, input: null, sendBtn: null,
+  };
+  const saAsks = new Map(); // question_id → element
+
+  function buildAssistant() {
+    const body = panelEl.querySelector(".settings-body");
+    if (!body) return;
+
+    // Floating action button (bottom-right of the settings body) toggles the
+    // drawer. Hidden while the drawer is open (the drawer has its own close).
+    const fab = document.createElement("button");
+    fab.type = "button";
+    fab.className = "settings-assistant-fab";
+    fab.setAttribute("data-tip", tr("set.assistant.open"));
+    fab.setAttribute("aria-label", tr("set.assistant.open"));
+    fab.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
+
+    // Floating right-side drawer with the chat.
+    const box = document.createElement("div");
+    box.className = "settings-assistant-panel hidden";
+    box.innerHTML = `
+      <div class="sa-panel-header">
+        <span class="sa-panel-title">${escHtml(tr("set.assistant.title"))}</span>
+        <button type="button" class="sa-box-close" data-tip="${escHtml(tr("set.assistant.close"))}" aria-label="${escHtml(tr("set.assistant.close"))}">×</button>
+      </div>
+      <div class="sa-transcript"></div>
+      <div class="sa-box-status"></div>
+      <div class="sa-composer">
+        <textarea class="sa-input" rows="1" placeholder="${escHtml(tr("set.assistant.placeholder"))}" data-i18n-placeholder="set.assistant.placeholder"></textarea>
+        <button type="button" class="sa-send" data-tip="${escHtml(tr("set.assistant.sendTip"))}" aria-label="${escHtml(tr("set.assistant.sendTip"))}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
+      </div>`;
+    body.appendChild(box);
+    body.appendChild(fab);
+
+    asst.fab = fab;
+    asst.box = box;
+    asst.transcript = box.querySelector(".sa-transcript");
+    asst.statusLine = box.querySelector(".sa-box-status");
+    asst.input = box.querySelector(".sa-input");
+    asst.sendBtn = box.querySelector(".sa-send");
+
+    fab.addEventListener("click", assistantToggle);
+    box.querySelector(".sa-box-close").addEventListener("click", () => assistantHide());
+
+    asst.input.addEventListener("input", autoGrowAsst);
+    asst.input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); assistantSend(); }
+    });
+    asst.sendBtn.addEventListener("click", assistantSend);
+
+    // Click outside the open drawer hides it (capture phase so app handlers that
+    // stop propagation can't keep it open). Clicks inside the drawer keep it
+    // open; the FAB is hidden while open (the capture handler runs before the
+    // FAB's own click, and bails while the drawer is still hidden, so opening
+    // is never cancelled).
+    document.addEventListener("click", (e) => {
+      if (!asst.box || asst.box.classList.contains("hidden")) return;
+      if (asst.box.contains(e.target)) return;
+      if (asst.fab && asst.fab.contains(e.target)) return;
+      assistantHide();
+    }, true);
+  }
+
+  function autoGrowAsst() {
+    const ta = asst.input;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
+  }
+  function assistantShow() {
+    if (!asst.box) return;
+    asst.box.classList.remove("hidden");
+    if (asst.fab) asst.fab.classList.add("is-open");
+    if (asst.input) asst.input.focus();
+  }
+  function assistantHide() {
+    if (!asst.box) return;
+    asst.box.classList.add("hidden");
+    if (asst.fab) asst.fab.classList.remove("is-open");
+  }
+  function assistantToggle() {
+    if (asst.box && asst.box.classList.contains("hidden")) assistantShow();
+    else assistantHide();
+  }
+  function assistantSetContext(id) { asst.contextId = id; }
+  function assistantContextLabel() {
+    const id = asst.contextId || state.activeFile;
+    return id ? tr("settings.menu." + id) : "";
+  }
+
+  async function ensureAssistantSession() {
+    if (asst.sessionId) return asst.sessionId;
+    const cached = localStorage.getItem(SA_SESSION_KEY);
+    if (cached) { asst.sessionId = cached; window.__omnisSettingsSessionId = cached; return cached; }
+    return await createAssistantSession();
+  }
+  async function createAssistantSession() {
+    const res = await apiFetch("/api/sessions", {
+      method: "POST",
+      body: JSON.stringify({ squad: "helper", hidden: true, title: "Settings assistant" }),
+    });
+    if (!res.ok) throw new Error("could not create settings assistant session");
+    const j = await res.json();
+    asst.sessionId = j.session_id;
+    localStorage.setItem(SA_SESSION_KEY, asst.sessionId);
+    window.__omnisSettingsSessionId = asst.sessionId;
+    return asst.sessionId;
+  }
+
+  function saAppendUser(text) {
+    const el = document.createElement("div");
+    el.className = "sa-msg sa-msg-user";
+    el.textContent = text;
+    asst.transcript.appendChild(el);
+    saScrollBottom();
+  }
+  function saNewAssistantBubble() {
+    const el = document.createElement("div");
+    el.className = "sa-msg sa-msg-assistant";
+    asst.transcript.appendChild(el);
+    saScrollBottom();
+    return el;
+  }
+  function saAppendError(text) {
+    const el = document.createElement("div");
+    el.className = "sa-msg sa-msg-error";
+    el.textContent = text;
+    asst.transcript.appendChild(el);
+    saScrollBottom();
+  }
+  function saScrollBottom() { if (asst.transcript) asst.transcript.scrollTop = asst.transcript.scrollHeight; }
+  function saSetStatus(s) { if (asst.statusLine) asst.statusLine.textContent = s || ""; }
+
+  async function assistantSend() {
+    if (asst.sending) return;
+    const text = (asst.input.value || "").trim();
+    if (!text) return;
+    asst.input.value = "";
+    autoGrowAsst();
+    assistantShow();
+    saAppendUser(text);
+    asst.sending = true;
+    asst.sendBtn.disabled = true;
+    saSetStatus(tr("set.assistant.thinking"));
+
+    const label = assistantContextLabel();
+    const prompt = label
+      ? tr("set.assistant.contextPreamble", { panel: label }) + "\n\n" + text
+      : text;
+
+    try {
+      let sid = await ensureAssistantSession();
+      let res = await postAssistantTurn(sid, prompt);
+      if (res && res.status === 404) {
+        // Session vanished (restart/GC before first turn) — recreate and retry once.
+        localStorage.removeItem(SA_SESSION_KEY);
+        asst.sessionId = null;
+        sid = await createAssistantSession();
+        res = await postAssistantTurn(sid, prompt);
+      }
+      if (!res || !res.ok) { saAppendError(tr("set.assistant.error")); return; }
+      await consumeAssistant(res, sid);
+    } catch (_) {
+      saAppendError(tr("set.assistant.error"));
+    } finally {
+      asst.sending = false;
+      asst.sendBtn.disabled = false;
+      saSetStatus("");
+    }
+  }
+
+  function postAssistantTurn(sid, prompt) {
+    return apiFetch(`/api/sessions/${sid}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ prompt }),
+    }).catch(() => null);
+  }
+
+  async function consumeAssistant(res, sid) {
+    let bubble = null, acc = "", changed = false;
+    const ensure = () => { if (!bubble) { bubble = saNewAssistantBubble(); acc = ""; } return bubble; };
+    const finalize = () => {
+      if (bubble && acc) renderMarkdown(bubble, acc);
+      else if (bubble && !acc) bubble.remove();
+      bubble = null; acc = "";
+    };
+    for await (const { event, data } of parseSSE(res)) {
+      switch (event) {
+        case "token":
+          ensure(); acc += (data.text || ""); renderMarkdown(bubble, acc); saScrollBottom();
+          saSetStatus(tr("set.assistant.streaming"));
+          break;
+        case "message":
+          if (!acc) { ensure(); acc = data.text || ""; renderMarkdown(bubble, acc); saScrollBottom(); }
+          break;
+        case "tool_call":
+          if (typeof isRoutingTool === "function" && isRoutingTool(data.name)) break;
+          finalize();
+          if (isSettingsWriteTool(data.name)) changed = true;
+          saSetStatus(tr("set.assistant.running", { tool: data.name || "tool" }));
+          break;
+        case "ask_user":
+          finalize(); saRenderAsk(sid, data); break;
+        case "ask_user_cancel":
+          saCancelAsk(data.question_id); break;
+        case "heartbeat": {
+          const secs = Math.round((data.elapsed_ms || 0) / 1000);
+          saSetStatus(secs > 0 ? tr("set.assistant.working", { secs }) : tr("set.assistant.thinking"));
+          break;
+        }
+        case "error":
+          finalize(); saAppendError(data.message || tr("set.assistant.error")); break;
+        case "done":
+          finalize(); if (changed) assistantMaybeRefreshPanel(); return;
+      }
+    }
+    finalize();
+    if (changed) assistantMaybeRefreshPanel();
+  }
+
+  function isSettingsWriteTool(name) {
+    switch ((name || "").toLowerCase()) {
+      case "set_preference": case "set_agent": case "set_model":
+      case "update_config": case "remove_config": case "rollback_settings": return true;
+      default: return false;
+    }
+  }
+
+  // After the assistant changes a setting, refresh the active panel so the new
+  // value shows up — but never clobber the user's unsaved edits.
+  function assistantMaybeRefreshPanel() {
+    if (!isOpen()) return;
+    const id = state.activeFile;
+    if (isClientOnly(id)) {
+      if (id === APPEARANCE_ID) { syncThemeFromServer(); renderAppearance(); }
+      return;
+    }
+    if (hasUnsavedActive()) { saSetStatus(tr("set.assistant.changedDirty")); return; }
+    delete state.parsed[id];
+    delete state.raw[id];
+    renderBody();
+  }
+
+  // Inline ask_user (single/confirm) — the Helper's sensitive-change confirmer
+  // and install prompts. Renders the choices as buttons; the answer resolves via
+  // the same endpoint the pane wizard uses.
+  function saRenderAsk(sid, q) {
+    const el = document.createElement("div");
+    el.className = "sa-ask";
+    const prompt = document.createElement("div");
+    prompt.className = "sa-ask-prompt";
+    renderMarkdown(prompt, q.prompt || "");
+    el.appendChild(prompt);
+    const row = document.createElement("div");
+    row.className = "sa-ask-actions";
+    (Array.isArray(q.choices) ? q.choices : []).forEach((c) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "sa-ask-choice";
+      b.textContent = c;
+      b.addEventListener("click", async () => {
+        row.querySelectorAll("button").forEach(x => x.disabled = true);
+        const ok = await resolveAsk(sid, q.question_id, { selected: [c] });
+        if (ok) {
+          el.classList.add("sa-ask-done");
+          row.querySelectorAll("button").forEach(x => x.classList.toggle("sa-ask-picked", x.textContent === c));
+        } else {
+          row.querySelectorAll("button").forEach(x => x.disabled = false);
+        }
+      });
+      row.appendChild(b);
+    });
+    el.appendChild(row);
+    asst.transcript.appendChild(el);
+    saAsks.set(q.question_id, el);
+    saScrollBottom();
+  }
+  function saCancelAsk(qid) {
+    const el = saAsks.get(qid);
+    if (el) { el.classList.add("sa-ask-cancelled"); el.querySelectorAll("button").forEach(x => x.disabled = true); }
+    saAsks.delete(qid);
+  }
+  async function resolveAsk(sid, qid, answer) {
+    try {
+      const res = await apiFetch(`/api/sessions/${sid}/ask-user/${qid}`, {
+        method: "POST", body: JSON.stringify(answer),
+      });
+      return res.ok;
+    } catch { return false; }
+  }
 
   // Window-level dirty guard.
   window.addEventListener("beforeunload", e => {

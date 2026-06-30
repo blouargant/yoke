@@ -14,11 +14,13 @@ import (
 	"github.com/blouargant/omnis/core/events"
 	"github.com/blouargant/omnis/internal/askuser"
 	"github.com/blouargant/omnis/internal/bg"
+	"github.com/blouargant/omnis/internal/configedit"
 	"github.com/blouargant/omnis/internal/goal"
 	"github.com/blouargant/omnis/internal/lsp"
 	mcpcfg "github.com/blouargant/omnis/internal/mcp"
 	"github.com/blouargant/omnis/internal/paths"
 	"github.com/blouargant/omnis/internal/scheduler"
+	"github.com/blouargant/omnis/internal/settings"
 	"github.com/blouargant/omnis/internal/skills"
 	"github.com/blouargant/omnis/internal/steer"
 	"github.com/blouargant/omnis/internal/tasks"
@@ -136,6 +138,12 @@ func BuildInfrastructure(ctx context.Context, opts Options) (*Infrastructure, er
 
 	buildTimestamp := time.Now().Format("20060102_150405")
 
+	// Enable the config-change journal so settings edits (the chat settings
+	// tools, the Settings panel, or any configedit write) can be rolled back via
+	// the /rollback command or the Helper's rollback_settings tool. Process-wide,
+	// persisted under $OMNIS_HOME/logs, retains the last 100 logical changes.
+	configedit.EnableHistory(filepath.Join(paths.LogsDir(), "settings_history.json"), 100)
+
 	be, err := teammates.ChooseBackend()
 	if err != nil {
 		return nil, fmt.Errorf("mailbox backend: %w", err)
@@ -174,6 +182,12 @@ func BuildInfrastructure(ctx context.Context, opts Options) (*Infrastructure, er
 	// first) at first use before the server starts. Same model as the skill
 	// gate above; process-wide because the LSP manager survives hot-reload.
 	lsp.SetDepGate(newLSPDepGate(askUserReg))
+
+	// Install the process-wide settings confirmer: the settings tool group
+	// (mounted on the Helper) uses it to gate security-sensitive changes
+	// (permissions, hooks, provider credentials) behind the ask-user widget.
+	// Process-wide because the ask-user registry is, and it survives hot-reload.
+	settings.SetConfirmer(newSettingsConfirmer(askUserReg))
 
 	suffix := func(userID, sessionID string) string {
 		u := sanitizeID(userID)

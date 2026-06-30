@@ -1,4 +1,4 @@
-/* Settings shell: panel, header, breadcrumb, tabs, body, footer, raw editor, forms, sub-tabs, combobox
+/* Settings shell: panel, header (+ top-bar Save/Discard actions), breadcrumb, tabs, body, raw editor, forms, sub-tabs, combobox
    Part of web/css/settings.css — edit this partial, not the @import barrel. */
 
 /* Settings panel — omnis configuration editor (dark theme).
@@ -35,10 +35,36 @@
 
 .settings-header {
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
   padding: 0.85rem 1.5rem;
   border-bottom: 1px solid var(--border);
   background: var(--bg-panel);
 }
+
+/* Discard / Save (and their status) live at the top-right of the header. The
+   auto left-margin collapses the header's free space to its left, pushing the
+   actions group to the right edge while the breadcrumb stays left. */
+.settings-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+.settings-header-actions .settings-status {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.settings-header-actions .settings-status.success { color: #89d185; }
+.settings-header-actions .settings-status.error   { color: var(--danger-fg); }
+.settings-header-actions .settings-status.warning { color: var(--warn-fg); }
 
 /* Breadcrumb: "Settings › Agent Configuration" */
 .settings-breadcrumb {
@@ -124,6 +150,9 @@
   flex-direction: column;
   min-height: 0;
   background: var(--bg);
+  /* Positioning anchor for the settings-assistant FAB + drawer (absolute
+     children, see settings/assistant.css) so they sit below the header. */
+  position: relative;
 }
 
 .settings-body-toolbar {
@@ -147,26 +176,7 @@
 
 .settings-error { color: var(--danger-fg); }
 
-.settings-footer {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.75rem 1.5rem;
-  border-top: 1px solid var(--border);
-  background: var(--bg-panel);
-}
-
-.settings-footer .settings-status {
-  flex: 1;
-  font-size: 0.85rem;
-  color: var(--text-muted);
-}
-.settings-footer .settings-status.success { color: #89d185; }
-.settings-footer .settings-status.error   { color: var(--danger-fg); }
-.settings-footer .settings-status.warning { color: var(--warn-fg); }
-
-.settings-footer button,
+.settings-header-actions button,
 .skill-detail-footer button {
   background: var(--bg-raised);
   border: 1px solid var(--border-strong);
@@ -178,17 +188,17 @@
   transition: background 0.1s ease, border-color 0.1s ease;
   user-select: none;
 }
-.settings-footer button:hover:not(:disabled),
+.settings-header-actions button:hover:not(:disabled),
 .skill-detail-footer button:hover:not(:disabled) { background: var(--bg-raised-hover); }
-.settings-footer button:active:not(:disabled),
+.settings-header-actions button:active:not(:disabled),
 .skill-detail-footer button:active:not(:disabled) { filter: brightness(0.88); }
-.settings-footer button:disabled,
+.settings-header-actions button:disabled,
 .skill-detail-footer button:disabled { opacity: 0.5; cursor: not-allowed; }
-.settings-footer .btn-save,
+.settings-header-actions .btn-save,
 .skill-detail-footer .btn-save        { background: var(--accent); color: #ffffff; border-color: var(--accent); }
-.settings-footer .btn-save:hover:not(:disabled),
+.settings-header-actions .btn-save:hover:not(:disabled),
 .skill-detail-footer .btn-save:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
-.settings-footer .btn-save:disabled,
+.settings-header-actions .btn-save:disabled,
 .skill-detail-footer .btn-save:disabled { background: var(--accent); border-color: var(--accent); opacity: 0.5; }
 
 

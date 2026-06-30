@@ -35,6 +35,7 @@ import (
 	"github.com/blouargant/omnis/internal/paths"
 	"github.com/blouargant/omnis/internal/regindex"
 	"github.com/blouargant/omnis/internal/registries"
+	"github.com/blouargant/omnis/internal/settings"
 	"github.com/blouargant/omnis/internal/skills"
 	"github.com/blouargant/omnis/internal/softskills"
 	"github.com/blouargant/omnis/internal/usercommands"
@@ -270,7 +271,7 @@ func toolsForAgentConfig(ctx context.Context, cfg RuntimeAgentConfig, runtime Ru
 
 	agentTools := []tool.Tool{}
 	toolsets := []tool.Toolset{}
-	hasSkills, hasSoftSkills, hasRegistries := false, false, false
+	hasSkills, hasSoftSkills, hasRegistries, hasSettings := false, false, false, false
 	var mountedMCPNames []string
 	for _, key := range keys {
 		switch key {
@@ -318,6 +319,13 @@ func toolsForAgentConfig(ctx context.Context, cfg RuntimeAgentConfig, runtime Ru
 			if docIdx != nil {
 				agentTools = append(agentTools, docIdx.Tools()...)
 			}
+		case "settings":
+			// Read/write omnis settings on the user's behalf (theme, agents,
+			// models, permissions, hooks, …). Sensitive changes are gated by the
+			// process-wide confirmer installed from infrastructure.go; routine
+			// changes apply directly and hot-reload via RequestReload.
+			agentTools = append(agentTools, settings.NewTools(buildSettingsDeps())...)
+			hasSettings = true
 		case "code_search":
 			// Mounted only when a semantic embedder is configured; otherwise
 			// the agent falls back to grep/read (additive contract).
@@ -374,6 +382,9 @@ func toolsForAgentConfig(ctx context.Context, cfg RuntimeAgentConfig, runtime Ru
 	if hasRegistries {
 		instructionParts = append(instructionParts, registries.LoaderProtocol)
 	}
+	if hasSettings {
+		instructionParts = append(instructionParts, settings.LoaderProtocol)
+	}
 	if p := mcpcfg.BuildLoaderProtocol(mountedMCPNames); p != "" {
 		instructionParts = append(instructionParts, p)
 	}
@@ -396,6 +407,17 @@ func toolsForAgentConfig(ctx context.Context, cfg RuntimeAgentConfig, runtime Ru
 		extraInstruction = strings.Join(instructionParts, "\n") + "\n"
 	}
 	return agentTools, toolsets, extraInstruction, mcpHandles
+}
+
+// buildSettingsDeps wires the settings tool group to the process-wide hot-reload
+// trigger so a settings change applies to the running fleet without a manual
+// reload. The settings tools resolve config paths lazily through internal/paths
+// + internal/configedit (re-resolved per call), so no runtime snapshot is
+// needed here. CLI/TUI leave requestReload returning false (changes apply on the
+// next start). The sensitive-change confirmer is installed separately and
+// process-wide (settings.SetConfirmer in infrastructure.go).
+func buildSettingsDeps() settings.Deps {
+	return settings.Deps{RequestReload: requestReload}
 }
 
 // buildRegistriesDeps wires the registries tool group to the live runtime

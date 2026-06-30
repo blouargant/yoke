@@ -107,9 +107,10 @@
   pointer-events: none;
 }
 
-/* Client-only sections (e.g. Appearance) have no Save/Discard footer
- * and no Form/Raw toggle — hide those chrome elements. */
+/* Client-only sections (e.g. Appearance) have nothing to save and no Form/Raw
+ * toggle — hide the top-bar Save/Discard actions and the toolbar. (The Helper
+ * assistant FAB lives in the body and stays available on every panel.) */
 .settings-panel--client-only .settings-body-toolbar,
-.settings-panel--client-only .settings-footer { display: none; }
+.settings-panel--client-only .settings-header-actions { display: none; }
 
 

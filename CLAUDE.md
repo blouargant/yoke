@@ -572,6 +572,8 @@ Resulting tags are applied to `_stats.json` via `Stats.RecordTag`.
 | `internal/codeindex/` | Per-repo semantic code index over `semindex` (line-window chunks, `git ls-files`-aware, content-hash incremental); `search_code` + `reindex_code` tools |
 | `internal/regindex/` | Semantic index over **remote registry** items of **all seven kinds** (skills, agents, mcp, a2a, squads, commands, permissions) over `semindex` at `index/registries`; metadata-only (name+description+tags, no extra fetch beyond a browse); accurate `installed` flags via per-kind installed-name thunks on `Config` (shared with `buildRegistriesDeps`); `search_registries` + `reindex_registries` tools. Rebuilds on registry-set change (corpus-hash self-heal in `Search` + `registries.OnSave` background hook) |
 | `internal/docindex/` | Semantic index over **omnis's own documentation** (user docs `web/docs` + developer docs `docs` → `/usr/share/doc/omnis/docs`; roots from `Roots()`, override `OMNIS_DOCS_DIRS`) over `semindex` at `index/docs`; markdown line-window chunks, content-hash incremental, heading-aware, stores the quotable text in chunk meta; `search_docs` + `reindex_docs` tools plus always-on `list_docs`/`read_doc`/`grep_docs` glob fallback (`NewNavTools`). Mounted on the `helper` agent via the `docs` tool group; built/refreshed in the background at server startup |
+| `internal/configedit/` | Layer-aware config read/write shared by the HTTP server (web-UI editor) and the in-process `settings` tools: `SourceLayer`/`AgentsConfigLayer`/`AgentTargetLayer` (moved from `server/layers.go`), `AtomicWriteFile`, `ConfigFileNames`, `ReadSection`/`WriteSection`, `ReadAgentEntry`/`WriteAgentEntry`, `ReadPreferences`/`SetPreference`, `EmbedderFingerprint`, and JSON-pointer `SetByPointer`/`RemoveByPointer`. Depends only on `internal/paths` + stdlib (no server/agent import), so both surfaces share one "where does this write land". `server/layers.go`/`config.go`/`preferences.go` delegate to it |
+| `internal/settings/` | The **`settings` tool group** mounted on the Helper: `get_settings`, `set_preference`, `set_agent`, `set_model`, `update_config`, `remove_config` (see "Settings management via chat"). All IO via `configedit`; sensitive changes gated by a process-wide `Confirmer` (`SetConfirmer`); `Deps{RequestReload}` for hot-reload; `LoaderProtocol` instruction addendum |
 | `internal/compress/` | Per-session context compression plugin + audit/statelog files |
 | `internal/cache/` | Prompt cache hit-rate stats plugin |
 | `internal/mcp/` | MCP config loader (path resolved from search chain) |
@@ -1148,6 +1150,18 @@ A session is in one of three states:
   `send` path blocks them similarly.
 - **deleted** — registry entry removed, conversation + agent log files
   hard-deleted (unchanged behaviour).
+
+**Hidden utility sessions** — a session can also be flagged **`hidden`** at
+creation (`POST /api/sessions {hidden:true}`). A hidden session is **fully
+functional and persisted** but omitted from the sidebar list — used for the
+in-Settings "Settings assistant" Helper chat (see "Settings Assistant"). The flag
+mirrors `Archived` exactly: `SessionMeta.Hidden` + `ConversationFile.Hidden`
+([internal/sessions/](internal/sessions/)), `Registry.SetHidden` +
+`sessions.SetConversationHidden` (persist), and `LoadPersistedSessions` maps it so
+it survives restart. **Only the HTTP `GET /api/sessions` handler filters hidden
+sessions** — `Registry.List()` stays unfiltered everywhere else (GC retention,
+idle indexer, the `/api/events` pending ask-user replay), so a hidden session is
+still pinned, watched, retained, and gets ask-user delivered.
 
 **GC retention invariant**: archived sessions stay in `Registry.List()`, so the
 GC ([server/gc.go](server/gc.go) `activeFromRegistry`) treats them as live and
@@ -2254,6 +2268,20 @@ The model is a two-layer build split across [agent/infrastructure.go](agent/infr
   sessions stay pinned to their existing generation across reloads, so a
   streaming turn never observes a swap. An old generation is torn down
   once its pinned-session refcount drops to zero.
+  - **Concurrency invariant (critical):** `Manager.Reload` reserves each new
+    generation number from a **monotonic `genSeq`** counter under the lock
+    *before* the (slow, unlocked) `BuildInstance`, and the teardown only retires
+    the previous generation when `oldGen != nextGen`. This is load-bearing: two
+    reloads overlapping (e.g. a settings-tool reload while another reload's build
+    is in flight) previously both computed `currentGen+1` → the same number → the
+    second reload's teardown deleted the generation it had just installed,
+    **emptying the instance map** so `Current()` returned nil, `/api/squads`
+    returned `null`, and every new chat failed with "unknown squad". `Current()`
+    / `Pin()` additionally **self-heal** a dangling `currentGen` (promote the
+    highest live generation), and `Reload` rejects a rebuilt generation that
+    resolves to **zero squads** (keeps the previous one). Regression coverage:
+    [agent/manager_reload_race_test.go](agent/manager_reload_race_test.go)
+    (run with `-race`) + `TestManagerCurrentSelfHealsDanglingGeneration`.
 
 MCP subprocesses are deduplicated by `(command, args, env)` hash via
 [internal/mcp/pool.go](internal/mcp/pool.go): two generations that mount
@@ -2485,6 +2513,167 @@ Enable the A2A server via `server.yaml`:
 a2a_enabled: true
 a2a_port: 8091
 ```
+
+### Settings management via chat (Helper `settings` tool group)
+
+Every omnis setting can be **read and changed from chat** by the **Helper** —
+so a user can ask "switch the coder agent to the balanced model", "set the theme
+to github-dark", or "allow `kubectl get`", and the Helper both explains and
+applies the change (writes the right config file in the right layer, then
+hot-reloads). The Helper now has **three** jobs: docs assistant, registry
+steward, and settings operator
+([registry/agents/helper/instruction.md](registry/agents/helper/instruction.md)).
+The Omnis router routes "view/change a setting" requests to the **Helper** squad
+(its description in [config/agents.json](config/agents.json) lists the triggers).
+
+- **Tool group `settings`** ([internal/settings/](internal/settings/), mounted
+  via the `settings` key in `toolsForAgentConfig` [agent/agent.go](agent/agent.go),
+  declared in [registry/agents/helper/agent.json](registry/agents/helper/agent.json)
+  `"tools": ["docs","registries","settings"]`). Eight tools:
+  - `get_settings(section?)` — read a section (`agents`/`squads`/`models`/
+    `permissions`/`mcp`/`a2a`/`hooks`/`preferences`/`server`) + its layer;
+    **credentials redacted** (`***set***`). No `section` → lists sections. Pairs
+    with the `docs` tools (docs explain *meaning*, this shows *current value*).
+  - `set_preference(key,value)` — `theme`/`locale`/`notifications` (validated;
+    theme ids enumerated from `<webDir>/css/themes/*.css`, locale ∈ en/fr/es/de).
+    Writes `preferences.json`; applies on next page load (no reload).
+  - `set_agent(name,changes)` — one agent's `model_ref`/`model`/`enabled`/
+    `tools`/`skills`/`description`/`max_instances`/`resumable_sessions`.
+  - `set_model(model_ref,changes)` — add/edit a `models.json` catalogue entry /
+    provider connection.
+  - `update_config(section,pointer,value_json)` / `remove_config(section,pointer)`
+    — generic RFC-6901 JSON-pointer editor for the long tail (permissions, hooks,
+    MCP servers, A2A peers, squad composition, agents-names list).
+  - `rollback_settings(steps?|all?)` / `settings_history(limit?)` — undo recent
+    settings changes (the config-change journal, see "Settings rollback" below)
+    and list what can be undone. Backs natural-language "revert that / go back to
+    the initial state" and the `/rollback` command.
+- **All file IO goes through `internal/configedit`** (layer-aware, the same
+  logic the web-UI editor uses), so chat edits land in the same layer
+  (fork-on-first-edit, local-promotion for local-only references) and the web UI
+  + chat never disagree. `server.yaml` is **read-only** via chat.
+- **"Confirm sensitive only".** Routine changes (theme, an agent's model, a
+  price) apply directly. Security-sensitive ones — `permissions`, `hooks`, or any
+  provider **credential** (`api_key`/`base_url`/…) — are gated by a process-wide
+  `Confirmer` (`settings.SetConfirmer`, wired to the ask-user widget from
+  [agent/infrastructure.go](agent/infrastructure.go) via
+  [agent/settings_confirm.go](agent/settings_confirm.go), mirroring the skills
+  dep gate). With no confirmer (CLI/TUI) sensitive changes are **declined**, never
+  silently applied. The eight tools are in `permissions.allow`
+  ([config/permissions.json](config/permissions.json)) so the *permission layer*
+  doesn't double-prompt — the in-tool confirmer is the single sensitive gate.
+  (`rollback_settings` is deliberately **not** sensitive-gated: it is a deliberate
+  user-requested undo, and restoring a prior state shouldn't re-prompt.)
+- **Hot-reload + restart awareness.** Each write calls `Deps.RequestReload`
+  (`agent.requestReload` → `Manager.Reload`; nil on CLI/TUI). A `models.json`
+  change that alters the **embedder identity** (`configedit.EmbedderFingerprint`)
+  reports `restart_required: true` — the process-wide embedder survives
+  hot-reload, so only a restart applies it. Every write returns
+  `{ok, section, written_path, layer, reloaded, restart_required, note}`.
+- **No-op contract:** an agent without the `settings` group is byte-identical to
+  before; with no `RequestReload`/`Confirmer` the tools degrade (changes apply on
+  next start, sensitive changes decline).
+- **In-Settings entry point:** besides the chat, the web UI Settings panel
+  embeds a Helper chat in its footer (see "Settings Assistant" below), so the same
+  read/explain/change capability is one click away while looking at any panel.
+
+### Settings rollback (config-change journal + `/rollback`)
+
+Every settings change is **journaled** so a user can take it back — "revert that",
+"undo your last change", "go back to the initial state". The substrate is a
+process-wide config-change journal in [internal/configedit/history.go](internal/configedit/history.go);
+the same mechanism is reachable three ways: the **`/rollback` command**, the
+Helper's **`rollback_settings`/`settings_history`** tools (natural language), and
+the **`POST /api/settings/rollback`** route.
+
+- **Journal hook = `configedit.AtomicWriteFile`.** Every config write funnels
+  through it — `WriteSection` (models/permissions/mcp/a2a/hooks/agents.json),
+  `WriteAgentEntry` (per-agent `agent.json`/`instruction.md`), `SetPreference`
+  (now routed through `AtomicWriteFile` too, so prefs are journaled + atomic), and
+  the web-UI editor's raw save ([server/config.go](server/config.go) `atomicWriteFile`).
+  Before overwriting, `recordHistory(path, newData)` snapshots the target's prior
+  bytes (or that it didn't exist) as a `HistoryEntry`; an **identical write is not
+  journaled** (`bytes.Equal`). `AtomicWriteFile` = `recordHistory` + the private
+  `atomicWriteRaw`; the **rollback restore uses `atomicWriteRaw` directly so it is
+  never re-journaled** (there is no redo). The journal file itself
+  (`$OMNIS_HOME/logs/settings_history.json`) is written with `atomicWriteRaw`, so
+  it can't recurse.
+- **Enabled process-wide**, once, in [agent/infrastructure.go](agent/infrastructure.go)
+  `BuildInfrastructure` via `configedit.EnableHistory(<logs>/settings_history.json,
+  100)` — persisted, survives restart and hot-reload, retains the last 100 logical
+  changes (oldest drop off). **No-op contract:** until `EnableHistory` is called
+  (e.g. unit tests) `hist` is nil and `AtomicWriteFile` is byte-identical to before.
+- **Logical changes (batches).** Each entry carries a `BatchID`; in v1 every write
+  is its own singleton batch with a path-derived `Label` ("models", "permissions",
+  "agent: coder", "preferences", …). `RollbackHistory(n)` undoes the last `n`
+  batches (`n<=0` = all); per affected file the **oldest** reverted entry is the
+  state restored to (so reverting two edits of one file lands on the earliest),
+  applied once per file as either *restored* (prior bytes) or *deleted* (the file
+  didn't exist before — e.g. a first fork system→user, or the first
+  `preferences.json`; deleting it restores the default). The `BatchID` plumbing is
+  retained so a future `StartChange/FinishChange` can group genuine multi-file ops
+  without reworking rollback.
+- **Surfaces.** `/rollback [N|all]` (web, `common` slash-command section; reserved
+  in `usercommands.ReservedNames`) POSTs `/api/settings/rollback {steps?,all?}` →
+  `configedit.RollbackHistory` → `Manager.Reload`, then prints what was reverted.
+  The Helper's `rollback_settings`/`settings_history` give the natural-language
+  path (allow-listed, **not** sensitive-gated — a requested undo shouldn't
+  re-prompt; the in-Settings assistant treats `rollback_settings` as a
+  settings-write so the panel refreshes). `GET /api/settings/history` lists the
+  undoable changes. **Reverts config-file edits only — not files downloaded by a
+  registry install.**
+
+### Settings Assistant (in-Settings Helper chat)
+
+The web UI Settings panel embeds a small Helper-backed chat so a user can ask
+about — and change — settings **while looking at the panel**, not only from a
+normal chat. Lives entirely in [web/settings.js](web/settings.js) (the Settings
+IIFE) + a CSS partial; the only backend addition is the `hidden` session flag
+(see "Session states").
+
+- **Floating action button + right-side drawer:** `buildAssistant`
+  ([web/settings.js](web/settings.js)) appends a **`.settings-assistant-fab`**
+  (bottom-right of the settings body) and a **`.settings-assistant-panel`** drawer
+  (transcript + status + `.sa-composer` with auto-grow textarea + send button) as
+  absolute children of `.settings-body`, so they sit below the header and never
+  cover the top-bar Save/Discard. The FAB toggles the drawer (`assistantToggle`);
+  while the drawer is open the FAB hides (`.is-open` → `display:none`) and the
+  drawer's `×` (`assistantHide`) closes it — as does a **click outside the
+  drawer** (a capture-phase document handler that bails while the drawer is
+  hidden, so opening via the FAB is never cancelled). There is no longer a
+  settings footer. Available on **every** panel, including client-only ones
+  (Appearance), where only the top-bar Save/Discard are hidden.
+- **Hidden, reusable Helper session:** `ensureAssistantSession` lazily creates
+  `POST /api/sessions {squad:"helper", hidden:true}`, caches the id in
+  `localStorage["agent_toolkit_settings_session"]`, and recreates it on a 404. The
+  Helper squad is leaderless, so turns run the Helper directly — no router.
+- **Panel context:** `setActiveFile` records the active panel label; each send
+  prepends a one-line context preamble (`set.assistant.contextPreamble`, the panel
+  label interpolated) to the prompt so the Helper scopes its `get_settings`/`set_*`
+  to that section. The box shows only the user's text.
+- **Reuses the wire protocol, not the pane pipeline:** `assistantSend` →
+  `POST /api/sessions/:id/messages {prompt}` consumed with the global `parseSSE`,
+  handling a subset of events (`token`/`message` → `renderMarkdown` bubble,
+  `tool_call` → compact "running …" status with routing tools suppressed via the
+  global `isRoutingTool`, `ask_user` → inline confirm, `heartbeat`/`error`/`done`).
+  Reuses app.js's plain-script globals (`apiFetch`, `parseSSE`, `renderMarkdown`,
+  `isRoutingTool`); no reconnect logic (settings turns are short).
+- **Inline ask_user:** the Helper's sensitive-change confirmer renders as choice
+  buttons in the box, answered via the same `POST …/ask-user/:qid {selected:[…]}`
+  endpoint the pane wizard uses.
+- **Refresh on change:** after a `done` whose turn called a settings-writing tool
+  (`isSettingsWriteTool`), the active panel is refreshed (invalidate
+  `state.parsed[id]` → `renderBody`) so the change shows up — **guarded by
+  `hasUnsavedActive()`** so it never clobbers the user's unsaved edits (it shows a
+  note instead). Appearance re-syncs theme/locale from the server instead.
+- **Kept out of app.js's reactive paths:** the id is published as
+  `window.__omnisSettingsSessionId`; [web/app.js](web/app.js) `subscribeGlobalEvents`
+  early-`continue`s for that sid, so the hidden session never spawns a pane
+  ask-widget, an OS notification, or a sidebar entry.
+- **No-op contract:** the mini-chat only acts on user input; an untouched Settings
+  panel behaves exactly as before. CSS in
+  [web/css/settings/assistant.css](web/css/settings/assistant.css); i18n keys
+  under `set.assistant.*`.
 
 ### Remote registries (skills, agents, mcp, a2a, squads, commands, permissions)
 
@@ -2830,7 +3019,7 @@ stays organised as commands are added:
   **User commands** section (the per-user `user_commands.json` entries).
 - **Sorting** (`sortSlashSection`): the **`common` section is NOT alphabetical**
   — it follows the hand-curated `COMMON_ORDER` (`/help`, `/compress`, `/init`,
-  `/cost`, `/learn-now`), i.e. the most-used commands first. **Every other section (and
+  `/cost`, `/learn-now`, `/rollback`), i.e. the most-used commands first. **Every other section (and
   the User-commands section) is sorted alphabetically** by command name. A
   `common` command missing from `COMMON_ORDER` sorts after the curated ones,
   alphabetically.

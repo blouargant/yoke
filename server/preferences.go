@@ -9,7 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/blouargant/omnis/internal/paths"
+	"github.com/blouargant/omnis/internal/configedit"
 )
 
 // preferences holds user-visible UI preferences that should survive server
@@ -44,10 +44,11 @@ type preferencesStore struct {
 }
 
 func newPreferencesStore(_ configFiles) *preferencesStore {
-	// User preferences are mutable state; always anchor them under the
-	// write root ($OMNIS_HOME/config), never alongside a lower-precedence
-	// agent.yaml read from ./config or /etc/omnis.
-	return &preferencesStore{path: filepath.Join(paths.ConfigWriteDir(), "preferences.json")}
+	// User preferences are mutable state; always anchor them under the write root
+	// ($OMNIS_HOME), never alongside a lower-precedence config read from ./config
+	// or /etc/omnis. configedit.PreferencesPath() is the single source of truth so
+	// the in-process settings tools write the very same file.
+	return &preferencesStore{path: configedit.PreferencesPath()}
 }
 
 func (s *preferencesStore) load() preferences {
